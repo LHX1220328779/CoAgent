@@ -1,5 +1,18 @@
 # 验证记录
 
+## 2026-10-31 协议与 MCP 真实流程联调（部分通过）
+
+- 任务传输使用已认证 HTTP append / V2 SSE，`domActions=0`；历史发现改为分页 HTTP 接口，保留实际标题、所属账号及任务独占关系。登录窗口的安全验证与任务协议分开，不绕过验证或静默回退 DOM。
+- 真实消息校验失败已复现并修复：按当前客户端使用 UUIDv7、真实上一用户消息 nodeId 及会话 triggerAddress。修正后得到实际 MCP 工具请求。新会话的初始历史可能含无输入编号的结束标记；适配器丢弃该组，只返回明确匹配输入序号的结果，包括合法的输入 0。
+- ShunCode Bridge 0.7.4 的 tools/list 声明 outputSchema，实际工具响应却只有纯文本 content。MCP 规范要求声明该字段时提供对应 structuredContent；新增可选文本桥接，保留输入 Schema、原始内容及错误，不扩大权限。[MCP 工具规范](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#output-schema)
+- 新文本桥接实际连接用户服务：initialize、15 项工具发现、真实文件读取及 OpenCode connected。真实 Sidekick 已通过 MCP 列目录、读固定源文件和测试、apply_patch 修复加法、复读、run_command 执行 Node 测试退出 0；测试内容未改。首次 Reviewer 因缺少可核查操作记录而拒绝；补充实际 OpenCode 工具历史（含读取基线、补丁和命令输出）后再次审查 approved，Supervisor 独立外部验收通过，任务首次 succeeded。随后同任务追加需求也成功：两个原生 Session 与 Arena 绑定保持一致，历史实际增加，Reviewer 仍为 Worker 原生子会话，两轮外部验收均通过。
+- 通过真实控制台 HTTP 验证：任务 A 正在执行时，任务 B 使用其他两条带原始标题的会话；抢绑 A 会话和归还 A 资源均为 409；B 暂停/恢复保留原上下文且仍需批准；取消保留占用；显式归还 2 条后，新任务 C 自动取得这两条 Arena 会话及全新的 OpenCode 会话，并创建独立 Git worktree。C 的模型拒绝文本工具协议且未修改文件；通过正常 followup 澄清执行器契约后仍未完成，审查响应也不符合帧格式；没有替换模型或伪造文件。该项保留为失败证据，不计为通过。
+- 真实暂停的一个上游输入收到 stop HTTP 确认，后续只读输出核实 turn-complete；没有工具或文件副作用。接收状态不确定的请求先核对，不自动重放。
+- 修复 Runtime 长请求被 fetch 默认响应头超时提前中断。真实本机 HTTP 对照等待 307 秒：旧 fetch 在 300682 毫秒报 UND_ERR_HEADERS_TIMEOUT；新任务 HTTP 在 307022 毫秒正常完成，并保留任务 AbortSignal。该项为传输对照，不调用模型。[Undici 超时说明](https://github.com/nodejs/undici/blob/main/docs/docs/api/Client.md)
+- 本机发送预算由 65536 调整为 131072 字节，以容纳此次多次恢复后的完整任务历史；属于本地限制，不代表 Arena 官方模型上限。
+- 最新类型检查和 52 项常规测试通过；3 项真实 OpenCode / LiteLLM 进程集成通过（模型上游为受控 Fixture）。浏览器点击与视觉 E2E 尚未验证。
+- 私有证据：`.coagent/live-user-acceptance/` 下 setup / progress / progress-git / control-flow / long-request / result 等 JSON，含本机任务数据，不提交 Git。
+
 ## 2026-10-30 当前工作区
 
 - `npm run test:all`：通过。

@@ -65,3 +65,12 @@ test('direct folders isolate task sessions, serialize overlapping paths and pres
   assert.equal(s.runtime.created.filter(session=>session.role==='sidekick').length,2);assert.equal(s.store.db.prepare('SELECT COUNT(*) AS n FROM worktrees').get()!.n,0);
  }finally{release();await s.close();}
 });
+
+test('independent review receives the worker tool evidence rather than only its report',async()=>{
+ const s=await setup();
+ try{
+  Object.assign(s.runtime,{toolHistory:async()=>[{tool:'local_workspace_apply_patch',status:'completed',output:'only result.txt changed'},{tool:'local_workspace_run_command',status:'completed',input:{command:'fixed-test'},output:'exit_code: 0'}]});
+  s.runtime.handler=async(role,directory,prompt)=>{if(role==='reviewer'){assert.match(prompt,/Observed OpenCode tool log/);assert.match(prompt,/only result.txt changed/);assert.match(prompt,/exit_code: 0/);return '{"approved":true,"findings":[]}';}await writeFile(join(directory,'result.txt'),'done');return 'Worker report';};
+  s.store.add([taskFromInput({id:'evidence',prompt:'Write file',repo:s.repo,requiresApproval:false})]);await s.orch.tick();await s.orch.idle();assert.equal(s.store.task('evidence').status,'succeeded');
+ }finally{await s.close();}
+});

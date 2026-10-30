@@ -22,7 +22,7 @@ async function main(){
     const mode=process.env.COAGENT_MODE ?? 'mock';if(!['mock','litellm','arena'].includes(mode))throw new Error('COAGENT_MODE must be mock, litellm or arena');
     const store=new Store(process.env.COAGENT_DB ?? '.coagent/state.db');
     const runtime=new OpenCodeRuntime(process.env.OPENCODE_URL ?? 'http://127.0.0.1:4096',process.env.OPENCODE_SERVER_PASSWORD ?? '');
-    const orchestrator=new Orchestrator(store,runtime,new GitWorktrees('.coagent/worktrees'),mode==='arena'?1:Number(process.env.COAGENT_CONCURRENCY ?? 2));
+    const orchestrator=new Orchestrator(store,runtime,new GitWorktrees(process.env.COAGENT_WORKTREE_ROOT??'.coagent/worktrees'),mode==='arena'?1:Number(process.env.COAGENT_CONCURRENCY ?? 2));
     const router=new ModelRouter({record:r=>store.record(r),...(mode==='arena'?{concurrency:1,retries:0,allowSimulatedTools:process.env.COAGENT_ALLOW_SIMULATED_TOOLS==='1',timeoutMs:600000}:{})});
     const upstreamURL=process.env.LITELLM_URL ?? 'http://127.0.0.1:4000/v1',upstreamKey=process.env.LITELLM_MASTER_KEY ?? '';
     const adapter=mode==='arena'?new ArenaAgentAdapter(process.env.ARENA_BRIDGE_URL ?? 'http://127.0.0.1:20140/v1',process.env.ARENA_BRIDGE_KEY ?? '',process.env.ARENA_SESSION_BINDINGS ?? '.coagent/arena-sessions.json',process.env.COAGENT_ARENA_DEBUG_DIR,arenaContextBudget(process.env.ARENA_CONTEXT_BUDGET_BYTES)):mode==='mock'?new MockAdapter():new OpenAIAdapter('litellm',upstreamURL,upstreamKey);

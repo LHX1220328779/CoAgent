@@ -51,7 +51,7 @@ test('console reuses running services, shows expired login, and never starts a s
 
 test('startup restores an existing account with one history sync and no password login',async()=>{
   let restored=false,syncs=0,logins=0;
-  const bridge=createServer((req,res)=>{if(req.url?.includes('login'))logins++;res.setHeader('content-type','application/json');res.end(JSON.stringify({ready:restored,accounts:[{email:'saved@example.invalid',disabled:false,cookieExpirySeconds:3600}]}));});
+  const bridge=createServer((req,res)=>{if(req.url?.includes('login'))logins++;res.setHeader('content-type','application/json');res.end(JSON.stringify({ready:restored,accounts:[{email:'saved@example.invalid',disabled:false,cookieExpirySeconds:restored?3600:-60}]}));});
   const runtime=createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({healthy:true,version:'1.19.5'}));});
   const gateway=createServer((req,res)=>{res.setHeader('content-type','application/json');if(req.url==='/arena/pool'&&req.method==='POST'){syncs++;restored=true;res.end('{"sessions":[]}');}else res.end('[]');});
   try{

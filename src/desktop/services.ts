@@ -59,7 +59,7 @@ export class LocalServices {
       try{await this.launch(name);}catch(error){this.errors.set(name,error instanceof AppError?error.message:'启动失败，请查看 .coagent/console-services 日志');}
     }
     const states=await this.snapshot(),bridge=states.find(s=>s.name==='bridge');
-    if(bridge?.running&&!bridge.ready&&bridge.accounts?.some(a=>!a.disabled&&!a.expired&&!a.blocked)&&states.some(s=>s.name==='gateway'&&s.ready)){
+    if(bridge?.running&&!bridge.ready&&bridge.accounts?.some(a=>!a.disabled&&!a.blocked)&&states.some(s=>s.name==='gateway'&&s.ready)){
       // Restore saved cookies through one history read; never resubmit passwords.
       await this.gateway('/arena/pool','POST',{}).catch(()=>{});return this.snapshot();
     }
@@ -68,9 +68,9 @@ export class LocalServices {
   private async launch(name:Name){
     if(!this.env.COAGENT_API_KEY || !this.env.OPENCODE_SERVER_PASSWORD)throw new AppError('根目录 .env 缺少本机鉴权配置');
     const env={...this.env};let args:string[],cwd=this.root;
+    try{const settings=JSON.parse(await readFile(join(this.root,'.coagent/bridge-launch.json'),'utf8'));for(const key of ['http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','no_proxy','NO_PROXY','ARENA_AGENT_PROXY'])if(typeof settings[key]==='string')env[key]=settings[key];}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     if(name==='bridge'){
       if(!env.ARENA_BRIDGE_KEY)throw new AppError('.env 缺少 ARENA_BRIDGE_KEY，请使用已有桥接的本机密钥');
-      try{const settings=JSON.parse(await readFile(join(this.root,'.coagent/bridge-launch.json'),'utf8'));for(const key of ['http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','no_proxy','NO_PROXY','ARENA_AGENT_PROXY'])if(typeof settings[key]==='string')env[key]=settings[key];}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       cwd=join(this.root,'arena-local-bridge');
       try{await readFile(join(cwd,'src/index.mjs'));}catch{throw new AppError('未安装 arena-local-bridge，请按接入说明安装到项目根目录');}
       const url=new URL(this.urls.bridge);env.ARENA_AGENT_BRIDGE_KEY=env.ARENA_BRIDGE_KEY;env.PORT=url.port||'20140';env.HOST='127.0.0.1';

@@ -30,6 +30,12 @@ test('runtime config aligns Arena model limits and gateway port without altering
     assert.equal(expanded.provider.coagent.models.sidekick.limit.context,65536);
     const normal=JSON.parse(await readFile(await runtimeConfig(template,root,{COAGENT_MODE:'mock'}),'utf8'));
     assert.equal(normal.provider.coagent.models.sidekick.limit.output,8192);
+    const mcp=JSON.parse(await readFile(await runtimeConfig(template,root,{COAGENT_MODE:'arena',COAGENT_MCP_URL:'https://mcp.example.invalid/test'}),'utf8'));
+    assert.equal(mcp.mcp.local_workspace.url,'{env:COAGENT_MCP_URL}');assert.equal(mcp.mcp.local_workspace.oauth,false);
+    assert.equal(mcp.agent.sidekick.tools.bash,false);assert.equal(mcp.agent.sidekick.permission.local_workspace_apply_patch,undefined);
+    assert.equal(mcp.agent.sidekick.permission['local_workspace_*'],'ask');assert.equal(mcp.agent.reviewer.permission['local_workspace_*'],'deny');assert.equal(mcp.agent.reviewer.permission.local_workspace_read_files,'allow');
+    const text=JSON.parse(await readFile(await runtimeConfig(template,root,{COAGENT_MCP_URL:'https://mcp.example.invalid/test',COAGENT_MCP_TEXT_ONLY:'1'}),'utf8'));
+    assert.equal(text.mcp.local_workspace.type,'local');assert.equal(text.mcp.local_workspace.command[0],process.execPath);assert.match(text.mcp.local_workspace.command[1],/mcp-text-bridge\.ts$/);assert.doesNotMatch(JSON.stringify(text),/mcp\.example\.invalid/);
   }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -50,4 +56,16 @@ test('cancel confirmation failure is explicit and retains the original interrupt
       assert.ok(error instanceof RuntimeExecutionError);assert.equal(error.stopConfirmed,false);assert.equal(error.code,'runtime_stop_unconfirmed');assert.ok(error.cause);return true;
     });assert.equal(aborts,1);
   }finally{await f.close();}
+});
+
+test('a submitted prompt waits for the task signal without the fetch headers deadline',async t=>{
+  const f=await fixture((_req,res)=>{setTimeout(()=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({info:{},parts:[{type:'text',text:'finished after tool rounds'}]}));},60);});
+  t.mock.method(globalThis,'fetch',async()=>{throw Object.assign(new Error('headers timeout'),{cause:{code:'UND_ERR_HEADERS_TIMEOUT'}});});
+  try{const result=await f.runtime.prompt('ses_long','sidekick','/tmp',{providerID:'coagent',modelID:'sidekick'},'work',AbortSignal.timeout(1000));assert.equal(result.text,'finished after tool rounds');}
+  finally{await f.close();}
+});
+
+test('review evidence comes from observed native tools, separate from assistant claims',async()=>{
+  const f=await fixture((_req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify([{parts:[{type:'text',text:'assistant claims tests passed'},{type:'tool',tool:'local_workspace_run_command',state:{status:'completed',input:{command:'node --test'},output:'exit_code: 0'}}]}]));});
+  try{const evidence=await f.runtime.toolHistory('ses_worker','/tmp');assert.equal(evidence.length,1);assert.ok('tool' in evidence[0]);assert.equal(evidence[0].tool,'local_workspace_run_command');assert.equal(evidence[0].output,'exit_code: 0');assert.doesNotMatch(JSON.stringify(evidence),/assistant claims/);}finally{await f.close();}
 });

@@ -26,6 +26,7 @@ export interface Task {
 export interface TaskExecution { id: string; taskID: string; attempt: number; startedAt: number; finishedAt: number | null; status: TaskStatus; error: string | null }
 export interface RuntimeResult { text: string; usage: ModelUsage; parts: unknown[] }
 export interface AgentRuntime {
+  toolHistory?(id: string, directory: string): Promise<unknown[]>;
   create(role: AgentRole, directory: string, model: ModelRef, parentID?: string): Promise<string>;
   prompt(id: string, role: AgentRole, directory: string, model: ModelRef, prompt: string, signal: AbortSignal): Promise<RuntimeResult>;
   abort(id: string, directory: string): Promise<void>;

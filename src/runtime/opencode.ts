@@ -1,13 +1,24 @@
 import { AppError, RuntimeExecutionError } from '../errors.ts';
+import {request as httpRequest} from 'node:http';
+import {request as httpsRequest} from 'node:https';
+import {Readable} from 'node:stream';
 import { parseSSE } from '../gateway/protocol.ts';
 import type { AgentRuntime, AgentRole, ModelRef, RuntimeResult } from '../types.ts';
 export class OpenCodeRuntime implements AgentRuntime {
   url: string; password: string;
   constructor(url: string, password: string) { this.url = url.replace(/\/$/,''); this.password = password; }
   async request(path: string, directory: string, method = 'GET', body?: unknown, signal?: AbortSignal) {
-    const response = await fetch(`${this.url}${path}?directory=${encodeURIComponent(directory)}`, { method,
-      headers: { 'content-type':'application/json', authorization:`Basic ${Buffer.from(`opencode:${this.password}`).toString('base64')}` },
-      body: body === undefined ? undefined : JSON.stringify(body), signal: signal ?? AbortSignal.timeout(15000) });
+    const url = this.url+path+'?directory='+encodeURIComponent(directory),options={ method,
+      headers: { 'content-type':'application/json', authorization:'Basic '+Buffer.from('opencode:'+this.password).toString('base64') },
+      body: body === undefined ? undefined : JSON.stringify(body), signal: signal ?? AbortSignal.timeout(15000) };
+    // A prompt includes all tool rounds and approvals. fetch's independent 300s
+    // headers timeout must not abort it before the task's own AbortSignal.
+    const response = method==='POST'&&/^\/session\/[^/]+\/message$/.test(path)?await new Promise<Response>((resolve,reject)=>{
+      const request=(url.startsWith('https:')?httpsRequest:httpRequest)(url,{method,headers:options.headers,signal:options.signal,timeout:0},incoming=>{
+        const headers=new Headers();for(let i=0;i<incoming.rawHeaders.length;i+=2)headers.append(incoming.rawHeaders[i],incoming.rawHeaders[i+1]);
+        resolve(new Response(Readable.toWeb(incoming) as ReadableStream<Uint8Array>,{status:incoming.statusCode??502,headers}));
+      });request.once('error',reject);request.end(options.body);
+    }):await fetch(url,options);
     if (!response.ok) { await response.body?.cancel(); throw new AppError(`OpenCode HTTP ${response.status}`,response.status,'runtime_error'); }
     return response;
   }
@@ -40,6 +51,11 @@ export class OpenCodeRuntime implements AgentRuntime {
       const error=new RuntimeExecutionError(stopConfirmed ? signal.aborted ? 'OpenCode turn interrupted' : 'OpenCode turn failed; inspect before resuming' : 'OpenCode stop not confirmed; reconcile this session before resuming',stopConfirmed ? 502 : 409,stopConfirmed);
       error.cause=cause;throw error;
     }
+  }
+  async toolHistory(id:string,directory:string){
+    const response=await this.request('/session/'+encodeURIComponent(id)+'/message',directory),messages=await response.json() as {parts?:any[]}[];
+    const tools=messages.flatMap(message=>message.parts??[]).filter(part=>part.type==='tool');
+    return [...(tools.length>40?[{omittedEarlierTools:tools.length-40}]:[]),...tools.slice(-40).map(part=>({tool:part.tool,status:part.state?.status,input:part.state?.input,output:String(part.state?.output??'').slice(0,12000),outputTruncated:String(part.state?.output??'').length>12000,error:part.state?.error}))];
   }
   async abort(id: string, directory: string) {
     const response=await this.request(`/session/${encodeURIComponent(id)}/abort`,directory,'POST');
