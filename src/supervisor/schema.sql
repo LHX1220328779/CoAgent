@@ -15,3 +15,15 @@ CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, acti
 CREATE TABLE IF NOT EXISTS scheduler_lock (id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, expires_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS events_task ON events(task_id,id);
 CREATE INDEX IF NOT EXISTS tasks_ready ON tasks(status,priority,created_at);
+CREATE TABLE IF NOT EXISTS task_agent_sessions (
+ id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), runtime_id TEXT NOT NULL UNIQUE,
+ role TEXT NOT NULL, directory TEXT NOT NULL, model TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+ UNIQUE(task_id,role)
+);
+CREATE TABLE IF NOT EXISTS arena_catalog (
+ id TEXT PRIMARY KEY, account_email TEXT NOT NULL, title TEXT NOT NULL, available INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS arena_leases (
+ arena_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), role TEXT NOT NULL,
+ runtime_id TEXT NOT NULL UNIQUE, reserved_at INTEGER NOT NULL, UNIQUE(task_id,role)
+);

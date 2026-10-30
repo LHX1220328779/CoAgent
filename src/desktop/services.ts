@@ -23,7 +23,7 @@ export class LocalServices {
     }
   }
   async gateway(path:string,method='GET',body?:unknown) {
-    const response=await fetch(this.urls.gateway+path,{method,headers:{authorization:`Bearer ${this.env.COAGENT_API_KEY}`,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
+    const response=await fetch(this.urls.gateway+path,{method,headers:{authorization:`Bearer ${this.env.COAGENT_API_KEY}`,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(path==='/arena/pool'&&method==='POST'?180000:30000)});
     if(!response.ok){const data=await response.json().catch(()=>null) as any;throw new AppError(data?.error?.message ?? `CoAgent 请求失败 (${response.status})`,response.status,'console_upstream');}
     return response.json();
   }
@@ -58,7 +58,12 @@ export class LocalServices {
       if(this.children.has(name))continue;
       try{await this.launch(name);}catch(error){this.errors.set(name,error instanceof AppError?error.message:'启动失败，请查看 .coagent/console-services 日志');}
     }
-    return this.snapshot();
+    const states=await this.snapshot(),bridge=states.find(s=>s.name==='bridge');
+    if(bridge?.running&&!bridge.ready&&bridge.accounts?.some(a=>!a.disabled&&!a.expired&&!a.blocked)&&states.some(s=>s.name==='gateway'&&s.ready)){
+      // Restore saved cookies through one history read; never resubmit passwords.
+      await this.gateway('/arena/pool','POST',{}).catch(()=>{});return this.snapshot();
+    }
+    return states;
   }
   private async launch(name:Name){
     if(!this.env.COAGENT_API_KEY || !this.env.OPENCODE_SERVER_PASSWORD)throw new AppError('根目录 .env 缺少本机鉴权配置');
@@ -68,7 +73,8 @@ export class LocalServices {
       try{const settings=JSON.parse(await readFile(join(this.root,'.coagent/bridge-launch.json'),'utf8'));for(const key of ['http_proxy','https_proxy','HTTP_PROXY','HTTPS_PROXY','no_proxy','NO_PROXY','ARENA_AGENT_PROXY'])if(typeof settings[key]==='string')env[key]=settings[key];}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       cwd=join(this.root,'arena-local-bridge');
       try{await readFile(join(cwd,'src/index.mjs'));}catch{throw new AppError('未安装 arena-local-bridge，请按接入说明安装到项目根目录');}
-      const url=new URL(this.urls.bridge);env.ARENA_AGENT_BRIDGE_KEY=env.ARENA_BRIDGE_KEY;env.PORT=url.port||'20140';env.HOST='127.0.0.1';args=[join(cwd,'src/index.mjs')];
+      const url=new URL(this.urls.bridge);env.ARENA_AGENT_BRIDGE_KEY=env.ARENA_BRIDGE_KEY;env.PORT=url.port||'20140';env.HOST='127.0.0.1';
+      const entry=join(this.root,'src/arena/bridge-entry.mjs');args=[await readFile(entry).then(()=>entry).catch(()=>join(cwd,'src/index.mjs'))];
     }else args=[join(this.root,'src/cli.ts'),name==='runtime'?'runtime':'serve'];
     const logDirectory=join(this.root,'.coagent/console-services');await mkdir(logDirectory,{recursive:true,mode:0o700});
     const log=await open(join(logDirectory,`${name}.log`),'a',0o600);

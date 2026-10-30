@@ -9,7 +9,8 @@ import type { ArenaAgentAdapter } from './gateway/adapters.ts';
 import { Store } from './supervisor/store.ts';
 import { Orchestrator, taskFromInput } from './supervisor/orchestrator.ts';
 import type { AgentRuntime, ToolCall, ModelUsage } from './types.ts';
-export function createApp(options:{key:string;router:ModelRouter;store:Store;orchestrator:Orchestrator;runtime:AgentRuntime;arena?:ArenaAgentAdapter;litellm?:{url:string;key:string}}) {
+import type {ArenaPool} from './arena/pool.ts';
+export function createApp(options:{key:string;router:ModelRouter;store:Store;orchestrator:Orchestrator;runtime:AgentRuntime;arena?:ArenaAgentAdapter;pool?:ArenaPool;litellm?:{url:string;key:string}}) {
   const {key,router,store,orchestrator,runtime}=options;
   if(key.length<16)throw new Error('COAGENT_API_KEY must contain at least 16 characters');
   return createServer(async(req,res)=>{
@@ -22,7 +23,9 @@ export function createApp(options:{key:string;router:ModelRouter;store:Store;orc
         if(!options.arena)throw new AppError('Enable arena mode before binding sessions',409);
         const body=await readJSON(req) as {sessionID?:unknown;arenaSessionID?:unknown}|null;
         if(typeof body?.sessionID!=='string' || typeof body?.arenaSessionID!=='string')throw new AppError('sessionID and arenaSessionID required');
-        if(!store.db.prepare('SELECT id FROM sessions WHERE runtime_id=?').get(body.sessionID))throw new AppError('Prepare this OpenCode session first',404);
+        const native=store.sessions().find((s:any)=>s.runtime_id===body.sessionID) as any;if(!native)throw new AppError('Prepare this OpenCode session first',404);
+        if(options.pool&&native.task_id)throw new AppError('请使用任务自动分配会话，保留任务独占关系',409);
+        if(options.pool&&(options.pool.snapshot().leases as any[]).some(lease=>lease.arena_id===String(body.arenaSessionID).toLowerCase()))throw new AppError('该会话已被任务独占，请先由原任务解绑',409);
         const result=await options.arena.bind(body.sessionID,body.arenaSessionID);
         store.audit('arena_bind',null,{sessionID:body.sessionID});json(res,200,result);return;
       }
@@ -58,7 +61,15 @@ export function createApp(options:{key:string;router:ModelRouter;store:Store;orc
           status='succeeded';
         }finally{release?.();store.record({model:String((body as {model?:unknown}).model),adapter:'litellm',latencyMs:Date.now()-started,status:protocolSignal.aborted?'canceled_or_timeout':status,usage:null});}return;
       }
-      if(req.method==='GET' && path==='/sessions'){json(res,200,store.db.prepare('SELECT id,runtime_id,role,directory,model,state FROM sessions').all());return;}
+      if(path==='/arena/pool'&&options.pool){if(req.method==='GET'){json(res,200,options.pool.snapshot());return;}if(req.method==='POST'){json(res,200,await options.pool.refresh());return;}}
+      const allocation=/^\/tasks\/([a-zA-Z0-9_-]+)\/(assign|release|followup)$/.exec(path);
+      if(allocation&&req.method==='POST'){
+        const [,id,action]=allocation;
+        if(action==='followup'){const input=await readJSON(req) as {prompt:string};orchestrator.followup(id,input.prompt);json(res,200,store.task(id));return;}
+        if(!options.pool)throw new AppError('当前模式没有 Arena 会话池',409);
+        json(res,200,await (action==='assign'?options.pool.assign(id):options.pool.release(id)));return;
+      }
+      if(req.method==='GET' && path==='/sessions'){json(res,200,store.sessions());return;}
       if(req.method==='GET' && path==='/tasks'){json(res,200,store.tasks());return;}
       if(req.method==='POST' && path==='/tasks'){
         const body=await readJSON(req);const inputs=Array.isArray(body)?body:[body];if(!inputs.length || inputs.length>100)throw new AppError('Expected 1..100 tasks');
@@ -72,12 +83,12 @@ export function createApp(options:{key:string;router:ModelRouter;store:Store;orc
         let plan:Record<string,unknown>[];try{plan=JSON.parse(result.text);}catch{throw new AppError('Lead returned invalid JSON',422);}
         if(!Array.isArray(plan) || !plan.length || plan.length>4)throw new AppError('Invalid plan',422);
         const prefix=randomUUID().slice(0,8);const ids=new Map(plan.map(t=>[t.id,`${prefix}-${String(t.id)}`]));
-        const tasks=plan.map(t=>taskFromInput({id:ids.get(t.id),title:t.title,prompt:t.prompt,dependsOn:Array.isArray(t.dependsOn)?t.dependsOn.map(d=>ids.get(d) ?? ''):[],repo:base.repo,requiresApproval:true}));
+        const tasks=plan.map(t=>taskFromInput({id:ids.get(t.id),title:t.title,prompt:t.prompt,dependsOn:Array.isArray(t.dependsOn)?t.dependsOn.map(d=>ids.get(d) ?? ''):[],repo:base.repo,workspaceMode:base.workspaceMode,requiresApproval:true}));
         store.add(tasks);store.audit('plan',null,{session,taskIDs:tasks.map(t=>t.id)});await orchestrator.tick();json(res,201,tasks.map(t=>store.task(t.id)));return;
       }
       const action=/^\/tasks\/([a-zA-Z0-9_-]+)(?:\/(pause|resume|cancel|approve|prepare))?$/.exec(path);
       if(action){const id=action[1];if(req.method==='GET' && !action[2]){json(res,200,store.task(id));return;}if(req.method==='POST' && action[2]){
-        switch(action[2]){case 'prepare':json(res,200,await orchestrator.prepare(id));return;case 'pause':await orchestrator.pause(id);break;case 'cancel':await orchestrator.cancel(id);break;case 'resume':orchestrator.resume(id);break;case 'approve':orchestrator.approve(id);break;}
+        switch(action[2]){case 'prepare':{const prepared=await orchestrator.prepare(id);if(options.pool)await options.pool.assign(id);json(res,200,prepared);return;}case 'pause':await orchestrator.pause(id);break;case 'cancel':await orchestrator.cancel(id);break;case 'resume':options.pool?.ready(id);orchestrator.resume(id);break;case 'approve':options.pool?.ready(id);orchestrator.approve(id);break;}
         await orchestrator.tick();json(res,200,store.task(id));return;
       }}
       if(req.method==='GET' && path==='/metrics'){json(res,200,store.metrics());return;}

@@ -91,7 +91,7 @@ Devin BYOK 可保留原生 Fusion UX，但内部宿主兼容成本更高；OpenC
 
 - OpenAIAdapter：标准 Chat SSE 上游，保留消息、工具和请求参数；不解析或执行自然语言命令。
 - ArenaResearchAdapter：只读文本研究通道，禁止编码工具。
-- ArenaAgentAdapter：已授权本机桥接端点；session header → 显式绑定文件 → 已存在的 Arena Agent UUID。实际 UUID 路径忽略上游请求的工具字段，所以本适配器将消息和工具 Schema 显式编码进文本，并解析带本轮标识的工具帧，随后继续进行 Schema 校验。最终答复帧按相同标识解封，Reviewer 的 JSON 不混入前导说明。禁止同一 Arena session 分配给两个 Agent；不自动创建或采集会话。
+- ArenaAgentAdapter：已授权本机桥接端点；session header → 原子绑定文件 → 已存在的 Arena Agent UUID。任务会话池从已登录账号读取现有历史和原始标题，在 SQLite 原子独占分配，完成后保留占用直至显式归还；不自动创建会话或在失败时换账号。实际 UUID 路径忽略上游请求的工具字段，所以本适配器将消息和工具 Schema 显式编码进文本，并解析带本轮标识的工具帧，随后继续进行 Schema 校验。最终答复帧按相同标识解封，Reviewer 的 JSON 不混入前导说明。
 - MockAdapter：确定性协议测试；usage 标为估计值，不代表模型效果。
 - LiteLLM：处理供应商及 Responses/Messages 协议转换，版本锁定 1.106.6。
 
@@ -109,9 +109,9 @@ SSE 使用增量 TextDecoder，支持拆包 UTF-8、CRLF、多行 data、心跳�
 
 任务状态：queued → awaiting_approval → running → reviewing → succeeded。错误进入 failed；依赖失败进入 blocked；显式 pause/cancel 中断执行。恢复不会把中断中的工具调用当作幂等操作重放：数据库启动时将 running/reviewing 转成 paused，用户检查 Worktree 后显式 resume。
 
-每个工作目录和角色对应一个持久 OpenCode Session；重试复用 Worker Session，Reviewer 使用独立 Session。OpenCode 保存完整历史，Supervisor 仅保存 session ID、最新报告及角色模型。Worker 完成后保存待审查检查点；Reviewer 传输或格式失败后显式恢复只重做审查，审查拒绝或外部验收失败后才重新执行 Worker。模型切换显式传 model，不重新创建 Session。跨 Agent 传递依赖任务报告和 Worktree 路径，不共享聊天内存。Prompt 缓存是上游能力，不保证命中；上下文压缩使用 Runtime summarize 合约，不自造隐式截断。
+每个任务和角色对应一个持久 OpenCode Session；同目录的新任务也新建独立上下文。同任务重试和追加需求复用 Worker Session，Reviewer 使用独立上下文并记录为 Worker 的原生子会话。高级 Lead 仍按项目目录复用。OpenCode 保存完整历史，Supervisor 仅保存 session ID、最新报告及角色模型。`task_agent_sessions`、`arena_catalog`、`arena_leases` 为增量建表，保留旧会话及任务数据。Worker 完成后保存待审查检查点；Reviewer 传输或格式失败后显式恢复只重做审查，审查拒绝或外部验收失败后才重新执行 Worker。模型切换显式传 model，不重新创建 Session。跨 Agent 传递依赖任务报告和实际目录，不共享聊天内存。Prompt 缓存是上游能力，不保证命中；上下文压缩使用 Runtime summarize 合约，不自造隐式截断。
 
-DAG 优先级高者先运行，依赖必须成功才可领取。单 Supervisor 通过 SQLite lease 防止两个进程重复调度；长任务不持有数据库事务。可配置 1–8 并发；Arena 强制 1。在每个 Worker 的独立 Worktree 中编辑和验收，不与 Lead 或其他 Worker 共享可写目录。
+DAG 优先级高者先运行，依赖必须成功才可领取。单 Supervisor 通过 SQLite lease 防止两个进程重复调度；长任务不持有数据库事务。可配置 1–8 并发；Arena 强制 1。网页默认 direct 模式，在用户选定的现有目录编辑和验收，无需 Git；重叠目录按真实路径串行。可选 worktree 模式从 Git HEAD 创建独立副本，CLI/API 默认保留此模式。文件与命令由本机 OpenCode 执行、保留审批，不将目录隔离称作 OS 沙箱。
 
 依赖报告不意味着依赖代码已自动合并。各任务应拆成独立变更，依赖代码必须先经人工审查整合。当前系统保留分支和脏工作树，不自动提交、推送、强制清理或冲突回滚。这样失败代码可检查。生产团队可在外层加入受审批的合并队列，不应将尚未实现的自动合并描述为已有功能。
 
@@ -125,7 +125,7 @@ flowchart LR
   S -->|任务/审计/事件| DB[(SQLite WAL)]
   S -->|V1 HTTP| O[OpenCode 1.19.5 Runtime]
   O --> SS[独立 Agent Sessions]
-  SS --> W[每任务 Git Worktree]
+  SS --> W[所选本地目录 / 每任务 Git Worktree]
   O -->|Chat SSE + Session Header| G[能力验证/路由网关]
   G --> L[LiteLLM 1.106.6]
   L --> A[授权模型上游]
@@ -222,7 +222,7 @@ SQLite lease 防止重复 Supervisor，崩溃后任务暂停供检查。重启�
 | P4 | DAG/Worktree | Store、GitWorktrees | 环拒绝/隔离/审批/依赖 | 无自动合并队列 |
 | P5 | 并发与验收 | acceptance argv、任务控制 | 多 Worker 同文件隔离/拒绝审查 | 并发收益不作推断 |
 | P6 | 恢复与观测 | lease、events、metrics | DB 重启/超时/取消 | 未完成多日 soak |
-| P7 | 本地交互 | 本地网页控制台、Ubuntu 入口、CLI、OpenCode | 复用/启动组件、任务/绑定/审批/diff 的进程与 HTTP 测试 | 浏览器点击未验证，图形 DAG 编辑未实现 |
+| P7 | 本地交互 | 本地工作台、Ubuntu 入口、账号会话池、执行详情、连续对话 | 启动/账号恢复、自动独占分配、命令审批、原地编辑、审查、续接与归还的 HTTP/真实 Runtime 测试 | 新账号在线发现受登录 403 阻断；浏览器点击和桌面打包未验证 |
 
 开发以每阶段可运行结果推进，不等待所有模块才集成。上述清单同时说明当前交付边界，未实现项不会标为完成。
 

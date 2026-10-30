@@ -11,6 +11,7 @@ import { OpenCodeRuntime } from './runtime/opencode.ts';
 import { ModelRouter } from './gateway/router.ts';
 import { MockAdapter, OpenAIAdapter, ArenaResearchAdapter, ArenaAgentAdapter, arenaContextBudget } from './gateway/adapters.ts';
 import { createApp } from './server.ts';
+import { ArenaPool } from './arena/pool.ts';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const [command='help',arg,extra]=process.argv.slice(2);
 const key=process.env.COAGENT_API_KEY ?? '';
@@ -27,7 +28,7 @@ async function main(){
     const adapter=mode==='arena'?new ArenaAgentAdapter(process.env.ARENA_BRIDGE_URL ?? 'http://127.0.0.1:20140/v1',process.env.ARENA_BRIDGE_KEY ?? '',process.env.ARENA_SESSION_BINDINGS ?? '.coagent/arena-sessions.json',process.env.COAGENT_ARENA_DEBUG_DIR,arenaContextBudget(process.env.ARENA_CONTEXT_BUDGET_BYTES)):mode==='mock'?new MockAdapter():new OpenAIAdapter('litellm',upstreamURL,upstreamKey);
     for(const alias of ['lead','sidekick','reviewer'])router.register(alias,{adapter,model:alias});
     if(process.env.ARENA_RESEARCH_URL)router.register('arena-research',{adapter:new ArenaResearchAdapter(process.env.ARENA_RESEARCH_URL,process.env.ARENA_RESEARCH_KEY ?? ''),model:process.env.ARENA_RESEARCH_MODEL ?? 'research'});
-    const server=createApp({key,router,store,orchestrator,runtime,...(adapter instanceof ArenaAgentAdapter?{arena:adapter}:{}),...(mode==='litellm'?{litellm:{url:upstreamURL,key:upstreamKey}}:{})});
+    const server=createApp({key,router,store,orchestrator,runtime,...(adapter instanceof ArenaAgentAdapter?{arena:adapter,pool:new ArenaPool(store,adapter)}:{}),...(mode==='litellm'?{litellm:{url:upstreamURL,key:upstreamKey}}:{})});
     server.listen(port,'127.0.0.1',()=>console.log(`CoAgent http://127.0.0.1:${port} mode=${mode}`));
     const tick=setInterval(()=>{void orchestrator.tick().catch(()=>console.error('Scheduler tick failed'));},250);
     let stopping=false;

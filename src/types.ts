@@ -12,10 +12,11 @@ export interface ModelUsage { inputTokens: number; outputTokens: number; cachedT
 export type ModelEvent = { type: 'text'; text: string } | { type: 'tool'; index: number; id?: string; name?: string; arguments?: string } | { type: 'usage'; usage: ModelUsage } | { type: 'finish'; reason: 'stop' | 'tool_calls' | 'length' };
 export interface ModelAdapter { id: string; capabilities: ModelCapabilities; generate(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> }
 export interface ModelRef { providerID: string; modelID: string }
-export interface AgentSession { id: string; runtimeID: string; role: AgentRole; directory: string; model: ModelRef; summary: string; state: 'idle' | 'running' }
+export interface AgentSession { id: string; runtimeID: string; role: AgentRole; directory: string; model: ModelRef; summary: string; state: 'idle' | 'running'; taskID?:string }
 export interface TaskDependency { taskID: string; dependsOn: string }
 export interface Task {
   id: string; title: string; prompt: string; repo: string; dependsOn: string[]; priority: number;
+  workspaceMode?: 'direct' | 'worktree';
   status: TaskStatus; role: AgentRole; model: ModelRef; reviewerModel: ModelRef;
   attempts: number; maxAttempts: number; timeoutMs: number; worktree: string | null;
   result: string | null; error: string | null; acceptance: string[] | null;

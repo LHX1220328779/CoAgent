@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { join, resolve } from 'node:path';
-import { writeFile, readFile, mkdir } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, access } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { repoFixture } from '../helpers.ts';
 import { runtimeEnvironment } from '../../src/runtime/environment.ts';
@@ -34,7 +34,8 @@ test('real OpenCode 1.19.5: provider, native tool, subagent route, SSE, persiste
       emit({role:'assistant',tool_calls:[{index:0,id:'call_review',type:'function',function:{name:'read',arguments:JSON.stringify({filePath:'proof.txt'})}}]});emit({},'tool_calls');
     }else if(body.model==='reviewer'){emit({role:'assistant',content:JSON.stringify({approved:JSON.stringify(results).includes('verified'),findings:[]})});emit({},'stop');
     }else if(content.includes('COAGENT_WRITE') && !results.length && toolNames.includes('bash')){
-      emit({role:'assistant',tool_calls:[{index:0,id:'call_write',type:'function',function:{name:'bash',arguments:JSON.stringify({command:"printf 'verified\\n' > proof.txt",description:'Create integration proof'})}}]});emit({},'tool_calls');
+      const command=content.includes('COAGENT_DEV_COMMANDS')?"node --version && npm --version && python3 --version && printf 'verified\\n' > proof.txt":"printf 'verified\\n' > proof.txt";
+      emit({role:'assistant',tool_calls:[{index:0,id:'call_write',type:'function',function:{name:'bash',arguments:JSON.stringify({command,description:'Run local development commands and write integration proof'})}}]});emit({},'tool_calls');
     }else if(content.includes('COAGENT_DELEGATE') && !results.length && toolNames.includes('task')){
       emit({role:'assistant',tool_calls:[{index:0,id:'call_delegate',type:'function',function:{name:'task',arguments:JSON.stringify({description:'Verify subagent route',prompt:'COAGENT_CHILD reply child-ok',subagent_type:'sidekick'})}}]});emit({},'tool_calls');
     }else{emit({role:'assistant',content:content.includes('COAGENT_CHILD')?'child-ok':content.includes('COAGENT_RECALL') && JSON.stringify(messages).includes('COAGENT_WRITE')?'history-preserved':'fixture-ok'});emit({},'stop');}
@@ -77,7 +78,14 @@ test('real OpenCode 1.19.5: provider, native tool, subagent route, SSE, persiste
     store.add(['e2e-a','e2e-b'].map(id=>taskFromInput({id,prompt:'COAGENT_WRITE create proof.txt',repo:f.repo,requiresApproval:true,acceptance:[process.execPath,'-e',"require('node:assert').equal(require('node:fs').readFileSync('proof.txt','utf8'),'verified\\n')"]})));
     await orch.tick();for(const id of ['e2e-a','e2e-b'])orch.approve(id);await orch.tick();await orch.idle();
     assert.deepEqual(store.tasks().map(t=>[t.id,t.status,t.error]),[['e2e-a','succeeded',null],['e2e-b','succeeded',null]]);
-    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM sessions').get()!.count,4);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM task_agent_sessions').get()!.count,4);
+    const local=join(f.root,'plain-project');await mkdir(local);await writeFile(join(local,'proof.test.cjs'),"const test=require('node:test');const assert=require('node:assert/strict');test('local output',()=>assert.equal(require('node:fs').readFileSync('proof.txt','utf8'),'verified\\n'));\n");
+    store.add([taskFromInput({id:'direct-native',prompt:'COAGENT_WRITE COAGENT_DEV_COMMANDS run local development commands and write proof.txt',repo:local,workspaceMode:'direct',acceptance:[process.execPath,'--test','proof.test.cjs']})]);
+    await orch.prepare('direct-native');orch.approve('direct-native');await orch.tick();await orch.idle();
+    assert.equal(store.task('direct-native').status,'succeeded',store.task('direct-native').error??'');assert.equal(store.task('direct-native').worktree,local);await assert.rejects(access(join(local,'.git')));
+    const localSession=store.session('sidekick',local)!;const localHistory=await runtime.request(`/session/${localSession.runtimeID}/message`,local).then(r=>r.json()) as any[];
+    const command=localHistory.flatMap(m=>m.parts).find(p=>p.type==='tool'&&p.tool==='bash'&&p.state.status==='completed');assert.ok(command);assert.match(command.state.output,/v24\./);assert.match(command.state.output,/Python 3\./);assert.equal(await readFile(join(local,'proof.txt'),'utf8'),'verified\n');
+    console.log(JSON.stringify({directDirectory:true,gitRequired:false,developmentCommands:['node --version','npm --version','python3 --version'],externalNodeTest:true}));
     console.log(JSON.stringify({opencode:'1.19.5',providerRequests:seen.length,childSessions:children.length,events:events.length,toolExecuted:true,restarted:true}));
   }catch(error){console.log('failure logs',logs.slice(-2000));console.log('fixture path',f.root);try{console.log((await readFile(join(f.root,'data/opencode/log/opencode.log'),'utf8')).slice(-5000));}catch{}throw error;}finally{eventsController.abort();await listening;await orch.close();gateway.closeAllConnections();await new Promise<void>(r=>gateway.close(()=>r()));store.close();if(child)await kill(child);upstream.closeAllConnections();await new Promise<void>(r=>upstream.close(()=>r()));await f.cleanup();}
 });

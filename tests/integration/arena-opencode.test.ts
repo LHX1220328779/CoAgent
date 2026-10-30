@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { repoFixture } from '../helpers.ts';
@@ -16,15 +16,20 @@ import { Store } from '../../src/supervisor/store.ts';
 import { Orchestrator } from '../../src/supervisor/orchestrator.ts';
 import { GitWorktrees } from '../../src/supervisor/worktree.ts';
 import { createApp } from '../../src/server.ts';
+import {ArenaPool} from '../../src/arena/pool.ts';
+import {LocalServices} from '../../src/desktop/services.ts';
+import {createConsole} from '../../src/desktop/server.ts';
 
 async function freePort(){const server=createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=(server.address() as {port:number}).port;await new Promise<void>(r=>server.close(()=>r()));return port;}
 async function stop(child:ChildProcess){if(child.exitCode!==null)return;child.kill('SIGTERM');await Promise.race([once(child,'exit'),delay(3000).then(()=>{if(child.exitCode===null)child.kill('SIGKILL');})]);}
 
 test('Arena mode with real OpenCode: generated config, session binding, local tools, review and terminal quota',{timeout:90000},async()=>{
-  const f=await repoFixture();const seen:{session:string;model:string;maxTokens:number}[]=[];const turns=new Map<string,number>();let child:ChildProcess|undefined;let logs='';
+  const f=await repoFixture();const seen:{session:string;model:string;maxTokens:number}[]=[];const turns=new Map<string,number>();let child:ChildProcess|undefined;let logs='';let consoleServer:ReturnType<typeof createConsole>|undefined;
   const uuid=(n:number)=>`00000000-0000-0000-0000-${String(n).padStart(12,'0')}`;
   const bridge=createServer(async(req,res)=>{
+    if(req.url==='/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({ready:true,accounts:[]}));return;}
     assert.equal(req.headers.authorization,'Bearer fixture-bridge-key');
+    if(req.url==='/coagent/sessions'){res.setHeader('content-type','application/json');res.end(JSON.stringify({accounts:[{email:'a@example.invalid',available:true},{email:'b@example.invalid',available:true}],sessions:[1,2,3,4].map(n=>({id:uuid(n),title:`原有会话标题 ${n} · 中文`,accountEmail:n%2?'a@example.invalid':'b@example.invalid',available:true})),syncedAt:Date.now()}));return;}
     let raw='';for await(const chunk of req)raw+=chunk;
     const request=JSON.parse(raw),session=String(req.headers['x-codex-session-id'] ?? '');
     seen.push({session,model:request.model,maxTokens:request.max_tokens});
@@ -56,39 +61,48 @@ test('Arena mode with real OpenCode: generated config, session binding, local to
   const arena=new ArenaAgentAdapter(`http://127.0.0.1:${(bridge.address() as {port:number}).port}/v1`,'fixture-bridge-key',join(f.root,'bindings.json'));
   const router=new ModelRouter({retries:0,allowSimulatedTools:true,concurrency:1,record:r=>store.record(r)});
   for(const model of ['lead','sidekick','reviewer'])router.register(model,{adapter:arena,model});
-  const key='arena-gateway-fixture-key';const gateway=createApp({key,router,store,orchestrator:orch,runtime,arena});gateway.listen(0,'127.0.0.1');await once(gateway,'listening');
+  const pool=new ArenaPool(store,arena);
+  const key='arena-gateway-fixture-key';const gateway=createApp({key,router,store,orchestrator:orch,runtime,arena,pool});gateway.listen(0,'127.0.0.1');await once(gateway,'listening');
   const port=(gateway.address() as {port:number}).port;
   async function post(path:string,body:unknown){const response=await fetch(`http://127.0.0.1:${port}${path}`,{method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(30000)});const result=await response.json() as any;assert.ok(response.ok,JSON.stringify(result));return result;}
   try{
     const state=join(f.root,'runtime');const configPath=await runtimeConfig(resolve('config/opencode.json'),state,{COAGENT_MODE:'arena',COAGENT_PORT:String(port)});
     const config=JSON.parse(await readFile(configPath,'utf8'));
-    // Only this isolated fixture allows the fixed shell command without interaction.
-    config.agent.sidekick.permission.bash='allow';await writeFile(configPath,JSON.stringify(config));
+    config.agent.sidekick.permission.bash='ask';await writeFile(configPath,JSON.stringify(config));
     const env=await runtimeEnvironment(state,configPath,{...process.env,COAGENT_API_KEY:key,OPENCODE_SERVER_PASSWORD:password});
     for(const name of ['OPENAI_API_KEY','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'])delete env[name];
     child=spawn(resolve('node_modules/.bin/opencode'),['serve','--hostname','127.0.0.1','--port',String(runtimePort)],{cwd:f.repo,env,stdio:['ignore','pipe','pipe']});
     child.stdout?.on('data',data=>logs+=data);child.stderr?.on('data',data=>logs+=data);
     let ready=false;for(let i=0;i<300;i++){if(child.exitCode!==null)throw new Error(logs.slice(-1000));try{await runtime.health();ready=true;break;}catch{await delay(100);}}assert.ok(ready,'Runtime startup');
     const argv=[process.execPath,'-e',"require('node:assert').equal(require('node:fs').readFileSync('proof.txt','utf8'),'verified\\n')"];
-    await post('/tasks',{id:'arena-proof',repo:f.repo,prompt:'Create proof.txt containing verified and a newline using the local tool.',acceptance:argv});
-    const prepared=await post('/tasks/arena-proof/prepare',{});
-    await post('/arena/bindings',{sessionID:prepared.worker.runtimeID,arenaSessionID:uuid(1)});
-    await post('/arena/bindings',{sessionID:prepared.reviewer.runtimeID,arenaSessionID:uuid(2)});
-    await post('/tasks/arena-proof/approve',{});await orch.idle();
-    const finished=store.task('arena-proof');assert.equal(finished.status,'succeeded',finished.error ?? '');
+    consoleServer=createConsole(new LocalServices(f.root,{COAGENT_MODE:'arena',COAGENT_PORT:String(port),OPENCODE_URL:runtime.url,OPENCODE_SERVER_PASSWORD:password,COAGENT_API_KEY:key,ARENA_BRIDGE_URL:arena.baseURL,ARENA_BRIDGE_KEY:'fixture-bridge-key',ARENA_SESSION_BINDINGS:arena.bindingsPath}));consoleServer.listen(0,'127.0.0.1');await once(consoleServer,'listening');
+    const base=`http://127.0.0.1:${(consoleServer.address() as {port:number}).port}`,page=await fetch(base),cookie=page.headers.get('set-cookie')!.split(';')[0];
+    async function client(path:string,body?:unknown){const response=await fetch(base+'/api'+path,{method:body===undefined?'GET':'POST',headers:{cookie,'x-coagent-console':'1','content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const data=await response.json() as any;assert.ok(response.ok,JSON.stringify(data));return data;}
+    const inventory=await client('/arena/sync',{});assert.equal(inventory.sessions[0].title,'原有会话标题 1 · 中文');
+    const project=join(f.root,'plain-client-project');await mkdir(project);
+    const created=await client('/tasks',{repo:project,prompt:'Create proof.txt containing verified and a newline using the local tool.',acceptance:argv});const id=created.task.id;assert.equal(created.task.workspaceMode,'direct');
+    const prepared=await client(`/tasks/${id}/details`);assert.equal(prepared.sessions.length,2);assert.equal(prepared.sessions[0].title,'原有会话标题 1 · 中文');assert.equal(new Set(prepared.sessions.map((s:any)=>s.accountEmail)).size,2);
+    const children=await runtime.request(`/session/${prepared.sessions[0].runtimeID}/children`,project).then(r=>r.json()) as any[];assert.ok(children.some(child=>child.id===prepared.sessions[1].runtimeID),'Reviewer is a native child Agent session');
+    await client(`/tasks/${id}/approve`,{});let approvals=0;
+    for(let i=0;i<250;i++){const detail=await client(`/tasks/${id}/details`);for(const permission of detail.permissions){assert.equal(permission.command,"printf 'verified\\n' > proof.txt");await client(`/tasks/${id}/permissions/${permission.id}`,{reply:'once'});approvals++;}if(['succeeded','failed'].includes(detail.task.status))break;await delay(100);}
+    await orch.idle();assert.equal(approvals,1);const finished=store.task(id);assert.equal(finished.status,'succeeded',finished.error ?? '');
+    const details=await client(`/tasks/${id}/details`);assert.ok(details.activity.some((event:any)=>event.type==='tool'&&event.tool==='bash'&&event.status==='completed'));assert.ok(details.activity.some((event:any)=>event.role==='reviewer'&&event.tool==='read'));
+    await client(`/tasks/${id}/followup`,{prompt:'确认已有 proof.txt 内容，保持文件不变。'});await orch.idle();assert.equal(store.task(id).status,'succeeded');assert.equal(store.task(id).attempts,2);assert.equal(store.session('sidekick',project,id)!.runtimeID,prepared.sessions[0].runtimeID,'follow-up retains the task context');
     assert.equal(await readFile(join(finished.worktree!,'proof.txt'),'utf8'),'verified\n');
     assert.ok(seen.length>=4);assert.ok(seen.every(turn=>turn.session.startsWith('ses_') && turn.maxTokens<=4096));
     assert.deepEqual(new Set(seen.map(turn=>turn.model)),new Set([uuid(1),uuid(2)]));
     await post('/tasks',{id:'arena-quota',repo:f.repo,prompt:'Do not replay a quota failure',maxAttempts:3,timeoutMs:3000});
-    const quota=await post('/tasks/arena-quota/prepare',{});
-    await post('/arena/bindings',{sessionID:quota.worker.runtimeID,arenaSessionID:uuid(3)});
-    await post('/arena/bindings',{sessionID:quota.reviewer.runtimeID,arenaSessionID:uuid(4)});
+    await post('/tasks/arena-quota/prepare',{});
     await post('/tasks/arena-quota/approve',{});await orch.idle();await orch.tick();await orch.idle();
     assert.equal(store.task('arena-quota').status,'failed');assert.equal(store.task('arena-quota').attempts,1);
     assert.equal(seen.filter(turn=>turn.model===uuid(3)).length,1,'OpenCode and Supervisor must not replay the quota failure');
-    console.log(JSON.stringify({arenaTransport:'local fixture',runtime:'OpenCode 1.19.5',toolsExecuted:true,distinctSessions:true,quotaRequests:1}));
+    assert.equal(pool.assignments(id).length,2,'success does not release sessions automatically');await post('/tasks',{id:'next-task',repo:project,workspaceMode:'direct',prompt:'Next task'});
+    const exhausted=await fetch(`http://127.0.0.1:${port}/tasks/next-task/prepare`,{method:'POST',headers:{authorization:`Bearer ${key}`}});assert.equal(exhausted.status,409);
+    assert.equal(pool.assignments('next-task').length,0,'insufficient resources do not reserve a partial pair');
+    await client(`/tasks/${id}/release`,{});await post('/tasks/next-task/assign',{});assert.equal(pool.assignments('next-task').length,2);assert.notEqual(store.session('sidekick',project,'next-task')!.runtimeID,prepared.sessions[0].runtimeID);
+    console.log(JSON.stringify({arenaTransport:'local fixture',runtime:'OpenCode 1.19.5',clientWorkflow:true,automaticMultiAccountAllocation:true,originalTitles:true,pagePermissionApprovals:approvals,taskExclusiveReuse:true,toolsExecuted:true,quotaRequests:1}));
   }finally{
-    await orch.close();if(child)await stop(child);gateway.closeAllConnections();bridge.closeAllConnections();
+    await orch.close();if(child)await stop(child);if(consoleServer){consoleServer.closeAllConnections();await new Promise<void>(r=>consoleServer!.close(()=>r()));}gateway.closeAllConnections();bridge.closeAllConnections();
     await Promise.all([new Promise<void>(r=>gateway.close(()=>r())),new Promise<void>(r=>bridge.close(()=>r()))]);store.close();await f.cleanup();
   }
 });

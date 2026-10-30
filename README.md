@@ -23,17 +23,18 @@ cp .env.example .env
 npm start
 ```
 
-默认打开 `http://127.0.0.1:4312`，自动启动缺少的组件并复用已有服务；重复启动连接已有控制台。首次启动会安装 Ubuntu 应用菜单入口 **CoAgent**；以后可从应用菜单打开，或双击/运行根目录 `启动CoAgent.sh`。页面支持项目选择、创建与准备任务、Arena 会话网址绑定、执行确认、单次工具审批、暂停/恢复/取消、报告和 diff。
+默认打开 `http://127.0.0.1:4312`，自动启动缺少的组件并复用已有服务；重复启动连接已有控制台。首次启动会安装 Ubuntu 应用菜单入口 **CoAgent**；以后可从应用菜单打开，或运行根目录 `启动CoAgent.sh`。页面支持多账号登录、同步现有会话及原始标题、任务独占自动分配、显式解绑、连续追加需求、实际命令/文件工具详情和审批。
 
 默认 `mock` 模式仅演示协议，不能自主完成编程。实际 Arena 使用见 [Arena 接入](docs/arena.md)。Runtime 使用 `.coagent/runtime` 的独立配置和会话目录。默认网关端口 4310、Runtime 4096；本机 `.env` 已将网关设为 4311。调试底层服务时可分别使用 `npm run coagent -- serve` 和 `npm run coagent -- runtime`。
 
-目标目录必须是已有提交的 Git 仓库，不能只包含未提交文件。新建 `task.json`：
+网页默认直接开发任意已存在的本地目录，包含未提交文件和现有依赖；可选 Git worktree 模式。CLI/API 为兼容已有任务默认使用 worktree，普通目录在 `task.json` 明确设置 `workspaceMode: "direct"`：
 
 ```json
 {
   "id": "first-task",
   "title": "修复一个明确的问题",
   "repo": "/absolute/path/to/your/repository",
+  "workspaceMode": "direct",
   "prompt": "描述具体变更、涉及文件与验收标准",
   "requiresApproval": true,
   "acceptance": ["npm", "test"]
@@ -44,15 +45,15 @@ npm start
 npm run coagent -- submit task.json
 npm run coagent -- prepare first-task
 npm run coagent -- sessions
-# Arena 模式：先按 docs/arena.md 绑定会话。
+# Arena 模式：先在客户端登录并同步会话；prepare 自动独占分配两条。
 npm run coagent -- approve first-task
 npm run coagent -- events
 npm run coagent -- show first-task
 ```
 
-验收命令是 argv 数组，不经 shell 解释。先核对命令再批准。`succeeded` 表示 Reviewer 同意且配置的验收命令退出 0；未配置验收命令时不代表测试已通过。修改保留在返回的 worktree 路径，**不会自动提交或合并到主工作目录**。
+验收命令是 argv 数组，不经 shell 解释。`succeeded` 表示 Reviewer 同意且配置的验收命令退出 0；未配置验收命令时不代表测试已通过。`worktree` 字段为实际执行目录：direct 模式直接修改所选项目，worktree 模式保留独立副本。完成任务后会话仍归原任务占用，需显式解绑后才能用于其他任务；继续原任务会保留其 Agent 上下文。
 
-其他命令：`list`、`metrics`、`pause <id>`、`resume <id>`、`cancel <id>`。Arena 模式可用 `bind <OpenCode session ID> <Arena UUID>` 绑定已有网页会话。`plan goal.json` 调用 Lead 生成最多四个待审批任务；Arena 模式先用 `plan-prepare goal.json` 创建并绑定 Lead Session，详见接入说明。恢复中断任务前检查工作目录；无法确认 Runtime 已停止时，任务保持暂停，复用会话前必须成功停止旧执行。
+其他命令：`list`、`metrics`、`pause <id>`、`resume <id>`、`cancel <id>`。普通任务使用会话池自动分配，`bind` 仅保留给无任务归属的高级 Lead 会话。`plan` 高级路径和在线能力边界见接入说明。恢复中断任务前检查工作目录和原网页执行状态。
 
 高风险 OpenCode 工具需要 Runtime 自身批准，可在控制台查看命令并选择仅本次允许或拒绝；Reviewer/Explorer 禁止 shell 和写入。TUI 连接方法见根目录使用手册。
 

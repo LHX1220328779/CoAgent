@@ -78,12 +78,16 @@ export class ArenaAgentAdapter extends OpenAIAdapter {
     return bindings;
   }
   async bind(sessionID:string,arenaSessionID:string) {
+    await this.bindMany([{sessionID,arenaSessionID}]);return {sessionID,arenaSessionID:arenaSessionID.toLowerCase()};
+  }
+  async bindMany(pairs:{sessionID:string;arenaSessionID:string}[],remove:string[]=[]) {
+    for(const {sessionID,arenaSessionID} of pairs){
     if(!/^ses_[a-zA-Z0-9_-]{1,128}$/.test(sessionID) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(arenaSessionID))throw new AppError('Expected an OpenCode session ID and an existing Arena UUID');
-    const target=arenaSessionID.toLowerCase();
+    }
     const write=this.bindingWrite.then(async()=>{
       const bindings=await this.bindings(true);
-      if(Object.entries(bindings).some(([id,value])=>id!==sessionID && typeof value==='string' && value.toLowerCase()===target))throw new AppError('Each agent requires a distinct Arena session',409,'arena_session_conflict');
-      bindings[sessionID]=target;
+      for(const id of remove)delete bindings[id];
+      for(const {sessionID,arenaSessionID} of pairs){const target=arenaSessionID.toLowerCase();if(Object.entries(bindings).some(([id,value])=>id!==sessionID&&typeof value==='string'&&value.toLowerCase()===target))throw new AppError('Each agent requires a distinct Arena session',409,'arena_session_conflict');bindings[sessionID]=target;}
       await mkdir(dirname(this.bindingsPath),{recursive:true,mode:0o700});
       const temporary=`${this.bindingsPath}.${randomUUID()}.tmp`;
       try {
@@ -92,7 +96,7 @@ export class ArenaAgentAdapter extends OpenAIAdapter {
       }finally{await rm(temporary,{force:true});}
     });
     this.bindingWrite=write.catch(()=>{});
-    await write;return {sessionID,arenaSessionID:target};
+    await write;
   }
   override async *generate(request: ModelRequest, signal: AbortSignal): AsyncGenerator<ModelEvent> {
     const session=request._coagentSession;

@@ -10,6 +10,10 @@ export class Store {
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path); this.db.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
+    // Additive migration: retain original history and bind legacy task sessions once.
+    this.db.exec(`INSERT OR IGNORE INTO task_agent_sessions(id,task_id,runtime_id,role,directory,model,summary,state)
+      SELECT s.id,t.id,s.runtime_id,s.role,s.directory,s.model,s.summary,s.state FROM tasks t JOIN sessions s
+      ON s.directory=json_extract(t.data,'$.worktree') AND s.role IN (json_extract(t.data,'$.role'),'reviewer') ORDER BY t.created_at,t.id;`);
   }
   transaction<T>(fn: () => T): T { this.db.exec('BEGIN IMMEDIATE'); try { const result = fn(); this.db.exec('COMMIT'); return result; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
   tasks(): Task[] { return (this.db.prepare('SELECT data FROM tasks ORDER BY priority DESC,created_at,id').all() as {data:string}[]).map(r => JSON.parse(r.data)); }
@@ -35,11 +39,15 @@ export class Store {
   event(taskID: string|null, type: string, data: unknown) { this.db.prepare('INSERT INTO events(task_id,type,data,created_at) VALUES(?,?,?,?)').run(taskID,type,JSON.stringify(data),Date.now()); }
   events(after = 0) { return this.db.prepare('SELECT * FROM events WHERE id>? ORDER BY id LIMIT 500').all(after); }
   audit(action: string, taskID: string|null, data: unknown = {}) { this.db.prepare('INSERT INTO audit_log(action,task_id,data,created_at) VALUES(?,?,?,?)').run(action,taskID,JSON.stringify(data),Date.now()); }
-  session(role: string, directory: string): AgentSession|undefined {
-    const r = this.db.prepare('SELECT * FROM sessions WHERE role=? AND directory=?').get(role,directory) as Record<string,string>|undefined;
-    return r ? {id:r.id,runtimeID:r.runtime_id,role:r.role as AgentSession['role'],directory:r.directory,model:JSON.parse(r.model),summary:r.summary,state:r.state as AgentSession['state']} : undefined;
+  session(role: string, directory: string, taskID?:string): AgentSession|undefined {
+    const r = (taskID?this.db.prepare('SELECT * FROM task_agent_sessions WHERE task_id=? AND role=?').get(taskID,role):this.db.prepare('SELECT * FROM sessions WHERE role=? AND directory=?').get(role,directory)??this.db.prepare('SELECT * FROM task_agent_sessions WHERE role=? AND directory=? ORDER BY rowid DESC LIMIT 1').get(role,directory)) as Record<string,string>|undefined;
+    return r ? {id:r.id,runtimeID:r.runtime_id,role:r.role as AgentSession['role'],directory:r.directory,model:JSON.parse(r.model),summary:r.summary,state:r.state as AgentSession['state'],...(r.task_id?{taskID:r.task_id}:{})} : undefined;
   }
-  saveSession(s: AgentSession) { this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?) ON CONFLICT(role,directory) DO UPDATE SET model=excluded.model,summary=excluded.summary,state=excluded.state').run(s.id,s.runtimeID,s.role,s.directory,JSON.stringify(s.model),s.summary,s.state); }
+  saveSession(s: AgentSession) {
+    if(s.taskID)this.db.prepare('INSERT INTO task_agent_sessions VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(task_id,role) DO UPDATE SET model=excluded.model,summary=excluded.summary,state=excluded.state').run(s.id,s.taskID,s.runtimeID,s.role,s.directory,JSON.stringify(s.model),s.summary,s.state);
+    else this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?,?) ON CONFLICT(role,directory) DO UPDATE SET model=excluded.model,summary=excluded.summary,state=excluded.state').run(s.id,s.runtimeID,s.role,s.directory,JSON.stringify(s.model),s.summary,s.state);
+  }
+  sessions(){return this.db.prepare('SELECT id,runtime_id,role,directory,model,state,task_id FROM task_agent_sessions UNION ALL SELECT id,runtime_id,role,directory,model,state,NULL AS task_id FROM sessions WHERE runtime_id NOT IN (SELECT runtime_id FROM task_agent_sessions)').all();}
   execution(task: Task) { const id = randomUUID(); this.db.prepare('INSERT INTO executions VALUES(?,?,?,?,NULL,?,NULL)').run(id,task.id,task.attempts,Date.now(),'running'); return id; }
   finishExecution(id: string, status: TaskStatus, error: string|null) { this.db.prepare('UPDATE executions SET finished_at=?,status=?,error=? WHERE id=?').run(Date.now(),status,error,id); }
   record(r: RequestRecord) { this.db.prepare('INSERT INTO model_requests(model,adapter,latency_ms,status,input_tokens,output_tokens,cached_tokens,estimated,cost,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(r.model,r.adapter,r.latencyMs,r.status,r.usage?.inputTokens ?? null,r.usage?.outputTokens ?? null,r.usage?.cachedTokens ?? null,r.usage ? Number(r.usage.estimated) : null,r.usage?.cost ?? null,Date.now()); }

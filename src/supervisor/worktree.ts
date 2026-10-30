@@ -1,11 +1,18 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, realpath, stat } from 'node:fs/promises';
 import { resolve, join, sep } from 'node:path';
 import { AppError } from '../errors.ts';
 import type { WorktreeManager } from '../types.ts';
 const exec = promisify(execFile);
 export async function git(directory: string, ...args: string[]) { return (await exec('git',args,{cwd:directory,maxBuffer:8*1024*1024,timeout:30000})).stdout.trim(); }
+export async function selectedDirectory(directory:string){
+  try{const canonical=await realpath(directory);if(!(await stat(canonical)).isDirectory())throw new Error();return canonical;}catch{throw new AppError('请选择存在且可访问的本地项目目录');}
+}
+export async function directChanges(directory:string){
+  try{await git(directory,'rev-parse','--verify','HEAD');}catch{return {diff:'',untracked:'',message:'直接目录模式：修改写入所选目录。没有可用的 Git 历史基线，请查看实际文件和 Worker 报告。'};}
+  return {diff:await git(directory,'diff','HEAD','--','.'),untracked:await git(directory,'ls-files','--others','--exclude-standard','--','.'),message:'直接目录模式：下方为所选目录的当前 Git 未提交差异，可能包含任务开始前已有的修改。'};
+}
 export class GitWorktrees implements WorktreeManager {
   root: string;
   constructor(root: string) { this.root = resolve(root); }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { writeFile, readFile } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, access, symlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../src/supervisor/store.ts';
 import { Orchestrator, taskFromInput } from '../src/supervisor/orchestrator.ts';
@@ -50,4 +50,18 @@ test('resume after a reviewer transport failure reuses the completed worker resu
   await s.orch.tick();await s.orch.idle();assert.equal(s.store.task('checkpoint').status,'failed');assert.equal(s.store.task('checkpoint').reviewPending,true);
   s.orch.resume('checkpoint');await s.orch.tick();await s.orch.idle();assert.equal(s.store.task('checkpoint').status,'succeeded');assert.equal(writes,1);assert.equal(reviews,2);assert.equal(s.store.task('checkpoint').reviewPending,false);
  }finally{await s.close();}
+});
+test('direct folders isolate task sessions, serialize overlapping paths and preserve existing files without initializing Git',async()=>{
+ const s=await setup(),directory=join(s.root,'plain'),alias=join(s.root,'alias'),child=join(directory,'child');let release!:()=>void,started!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),begin=new Promise<void>(resolve=>{started=resolve;});
+ try{
+  await mkdir(child,{recursive:true});await symlink(directory,alias);await writeFile(join(directory,'existing.txt'),'local-only');
+  s.runtime.handler=async(role,path,prompt)=>{if(role==='reviewer'){assert.match(prompt,/没有可用的 Git 历史基线/);return '{"approved":true,"findings":[]}';}if(prompt.startsWith('First')){started();await gate;}await writeFile(join(path,'result.txt'),prompt.startsWith('First')?'first':'second');return 'Changed local file';};
+  s.store.add([taskFromInput({id:'direct-a',prompt:'First task',repo:directory,workspaceMode:'direct',requiresApproval:false}),taskFromInput({id:'direct-b',prompt:'Second task',repo:alias,workspaceMode:'direct',requiresApproval:false}),taskFromInput({id:'direct-child',prompt:'Child',repo:child,workspaceMode:'direct'})]);
+  await s.orch.tick();await begin;assert.equal(s.store.task('direct-b').status,'queued');
+  await assert.rejects(s.orch.prepare('direct-child'),{code:'workspace_busy'});release();await s.orch.idle();
+  await s.orch.tick();await s.orch.idle();assert.equal(s.store.task('direct-b').status,'succeeded');assert.equal(s.store.task('direct-b').worktree,directory);
+  assert.equal(await readFile(join(directory,'result.txt'),'utf8'),'second');assert.equal(await readFile(join(directory,'existing.txt'),'utf8'),'local-only');await assert.rejects(access(join(directory,'.git')));
+  assert.equal(s.runtime.created.filter(session=>session.role==='sidekick').length,2);assert.equal(s.store.db.prepare('SELECT COUNT(*) AS n FROM worktrees').get()!.n,0);
+ }finally{release();await s.close();}
 });

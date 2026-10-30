@@ -8,9 +8,10 @@ import { promisify } from 'node:util';
 import { AppError } from '../errors.ts';
 import { json, readJSON } from '../http.ts';
 import { OpenCodeRuntime } from '../runtime/opencode.ts';
-import { git } from '../supervisor/worktree.ts';
+import { git, selectedDirectory, directChanges } from '../supervisor/worktree.ts';
 import type { Task } from '../types.ts';
 import { LocalServices } from './services.ts';
+import {activity} from './activity.ts';
 const exec=promisify(execFile);
 
 function arenaUUID(value:unknown){
@@ -25,7 +26,7 @@ export function createConsole(services:LocalServices){
   const secretCookie=(req:IncomingMessage)=>{const value=String(req.headers.cookie??'').match(/(?:^|;\s*)coagent_console=([^;]+)/)?.[1]??'';const a=Buffer.from(value),b=Buffer.from(session);return a.length===b.length&&timingSafeEqual(a,b);};
   const bindings=async()=>{try{return JSON.parse(await readFile(resolve(services.root,services.env.ARENA_SESSION_BINDINGS??'.coagent/arena-sessions.json'),'utf8')) as Record<string,string>;}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return {};throw new AppError('会话绑定文件无法读取',409);}};
   const task=async(id:string)=>services.gateway(`/tasks/${encodeURIComponent(id)}`) as Promise<Task>;
-  const sessions=async(t:Task)=>{const all=await services.gateway('/sessions') as any[];return all.filter(s=>s.directory===t.worktree);};
+  const sessions=async(t:Task)=>{const all=await services.gateway('/sessions') as any[];return all.filter(s=>s.task_id?s.task_id===t.id:s.directory===t.worktree);};
   return createServer(async(req,res)=>{
     try{
       const host=req.headers.host??'';
@@ -42,7 +43,9 @@ export function createConsole(services:LocalServices){
       if(!secretCookie(req) || req.headers['x-coagent-console']!=='1' || req.headers['sec-fetch-site']==='cross-site')throw new AppError('请从本机控制台页面操作',403);
       if(req.method==='GET' && path==='/api/overview'){
         const states=await services.snapshot();let tasks:unknown[]=[];if(states.some(s=>s.name==='gateway'&&s.ready))tasks=await services.gateway('/tasks') as unknown[];
-        json(res,200,{services:states,tasks,mode:services.env.COAGENT_MODE??'mock'});return;
+        const pool=services.env.COAGENT_MODE==='arena'&&states.some(s=>s.name==='gateway'&&s.ready)?await services.gateway('/arena/pool').catch(()=>null):null;
+        const login=states.some(s=>s.name==='bridge'&&s.running)?await fetch(services.urls.bridge+'/coagent/login/status',{headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`},signal:AbortSignal.timeout(1800)}).then(async r=>r.ok?await r.json():null).catch(()=>null) as any:null;
+        json(res,200,{services:states,tasks,mode:services.env.COAGENT_MODE??'mock',pool,pendingLogin:login?.pending?.[0]??null});return;
       }
       if(req.method==='POST' && path==='/api/services/start'){json(res,200,{services:await services.start()});return;}
       if(req.method==='POST' && path==='/api/services/stop'){
@@ -59,39 +62,54 @@ export function createConsole(services:LocalServices){
         const input=await readJSON(req) as any;
         if(typeof input?.email!=='string'||typeof input?.password!=='string'||!input.email.trim()||!input.password)throw new AppError('请填写邮箱和密码');
         const response=await fetch(services.urls.bridge+'/api/accounts/login',{method:'POST',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`,'content-type':'application/json'},body:JSON.stringify({email:input.email,password:input.password}),signal:AbortSignal.timeout(120000)});
-        await response.body?.cancel();if(!response.ok)throw new AppError(`桥接登录未成功 (${response.status})。请在 Arena 网页正常登录并处理验证，再重试；不会自动重复登录。`,422);
-        json(res,200,{ok:true});return;
+        const result=await response.json().catch(()=>null) as any;if(!response.ok)throw new AppError(`桥接登录未成功${result?.error?.upstreamStatus?'，Arena 返回 '+result.error.upstreamStatus:' ('+response.status+')'}。请在 Arena 网页正常登录并处理验证后重试。`,422);
+        const synced=await services.gateway('/arena/pool','POST',{}).catch(()=>null);json(res,200,{ok:true,synced:Boolean(synced)});return;
+      }
+      if(req.method==='POST'&&path==='/api/arena/sync'){json(res,200,await services.gateway('/arena/pool','POST',{}));return;}
+      if(req.method==='POST'&&['/api/bridge/login/start','/api/bridge/login/complete'].includes(path)){
+        const input=await readJSON(req),route=path.endsWith('/start')?'start':'complete';const response=await fetch(services.urls.bridge+`/coagent/login/${route}`,{method:'POST',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`,'content-type':'application/json'},body:JSON.stringify(input),signal:AbortSignal.timeout(60000)});const result=await response.json() as any;
+        if(!response.ok)throw new AppError(result.error?.message??'网页登录窗口操作未成功',422);if(route==='complete')await services.gateway('/arena/pool','POST',{}).catch(()=>{});json(res,200,result);return;
       }
       if(req.method==='POST' && path==='/api/tasks'){
         const input=await readJSON(req) as any;
         if(typeof input?.repo!=='string'||!isAbsolute(input.repo)||typeof input?.prompt!=='string'||!input.prompt.trim())throw new AppError('请填写项目绝对路径和任务要求');
-        const repo=resolve(input.repo);
-        try{if(resolve(await git(repo,'rev-parse','--show-toplevel'))!==repo)throw new AppError('请选择 Git 仓库根目录');await git(repo,'rev-parse','HEAD');}catch(error){if(error instanceof AppError)throw error;throw new AppError('请选择已有至少一次提交的 Git 仓库根目录');}
-        const created=await services.gateway('/tasks','POST',{id:randomUUID(),title:typeof input.title==='string'?input.title:undefined,repo,prompt:input.prompt,acceptance:input.acceptance,timeoutMs:900000,requiresApproval:true}) as Task[];
+        const repo=await selectedDirectory(input.repo),workspaceMode=input.workspaceMode??'direct';
+        if(!['direct','worktree'].includes(workspaceMode))throw new AppError('请选择有效的工作区模式');
+        if(workspaceMode==='worktree')try{if(resolve(await git(repo,'rev-parse','--show-toplevel'))!==repo)throw new AppError('Git 隔离模式请选择仓库根目录');await git(repo,'rev-parse','HEAD');}catch(error){if(error instanceof AppError)throw error;throw new AppError('Git 隔离模式需要已有至少一次提交的仓库');}
+        const created=await services.gateway('/tasks','POST',{id:randomUUID(),title:typeof input.title==='string'?input.title:undefined,repo,workspaceMode,prompt:input.prompt,acceptance:input.acceptance,timeoutMs:900000,requiresApproval:true}) as Task[];
         const t=created[0];
         try{await services.gateway(`/tasks/${t.id}/prepare`,'POST');json(res,201,{task:await task(t.id)});}catch(error){json(res,201,{task:await task(t.id),prepareError:error instanceof AppError?error.message:'准备失败，请点击“准备工作区”重试'});}return;
       }
-      const match=/^\/api\/tasks\/([a-zA-Z0-9_-]+)(?:\/(details|diff|open-worktree|bind|approve|prepare|pause|resume|cancel|permissions\/[^/]+))?$/.exec(path);
+      const match=/^\/api\/tasks\/([a-zA-Z0-9_-]+)(?:\/(details|diff|open-worktree|assign|release|followup|bind|approve|prepare|pause|resume|cancel|permissions\/[^/]+))?$/.exec(path);
       if(match){
         const [,id,action]=match,t=await task(id);
         if(req.method==='GET' && action==='details'){
           const known=await sessions(t),map=await bindings();let permissions:any[]=[];
-          if(t.worktree && ['running','reviewing','paused'].includes(t.status)){
+          if(t.worktree && ['running','reviewing'].includes(t.status)){
             const response=await runtime.request('/permission',t.worktree).catch(()=>null);
             if(response){const all=await response.json() as any[];permissions=all.filter(p=>known.some(s=>s.runtime_id===p.sessionID&&s.role===t.role)).map(p=>({id:p.id,permission:p.permission,patterns:p.patterns,command:typeof p.metadata?.command==='string'?p.metadata.command:undefined}));}
           }
-          json(res,200,{task:t,sessions:known.map(s=>({role:s.role,runtimeID:s.runtime_id,arenaUUID:map[s.runtime_id]??null})),permissions});return;
+          const pool=await services.gateway('/arena/pool').catch(()=>null) as any;
+          const events=t.worktree?await activity(runtime,t.worktree,known):[];
+          json(res,200,{task:t,sessions:known.map(s=>{const assigned=pool?.sessions?.find((entry:any)=>entry.task_id===id&&entry.role===s.role);return {role:s.role,runtimeID:s.runtime_id,arenaUUID:assigned?.id??map[s.runtime_id]??null,title:assigned?.title??null,accountEmail:assigned?.account_email??null};}),permissions,activity:events,poolEnabled:Boolean(pool)});return;
         }
-        if(req.method==='GET' && action==='diff'){if(!t.worktree)throw new AppError('工作区尚未创建');json(res,200,{diff:await git(t.worktree,'diff','HEAD','--'),untracked:await git(t.worktree,'ls-files','--others','--exclude-standard')});return;}
+        if(req.method==='POST'&&['assign','release'].includes(action??'')){json(res,200,await services.gateway(`/tasks/${id}/${action}`,'POST',{}));return;}
+        if(req.method==='POST'&&action==='followup'){
+          const input=await readJSON(req) as any;if((await services.snapshot()).some(s=>!s.ready))throw new AppError('请先处理组件或账号状态',409);
+          await services.gateway(`/tasks/${id}/followup`,'POST',{prompt:input.prompt});json(res,200,await services.gateway(`/tasks/${id}/approve`,'POST'));return;
+        }
+        if(req.method==='GET' && action==='diff'){if(!t.worktree)throw new AppError('工作区尚未创建');json(res,200,t.workspaceMode==='direct'?await directChanges(t.worktree):{diff:await git(t.worktree,'diff','HEAD','--'),untracked:await git(t.worktree,'ls-files','--others','--exclude-standard')});return;}
         if(req.method==='POST' && action==='open-worktree'){if(!t.worktree)throw new AppError('工作区尚未创建');await exec('xdg-open',[t.worktree],{timeout:10000}).catch(()=>{throw new AppError('无法打开文件管理器，请使用页面显示的代码目录');});json(res,200,{ok:true});return;}
         if(req.method==='POST' && action==='bind'){
           const input=await readJSON(req) as any,worker=arenaUUID(input?.worker),reviewer=arenaUUID(input?.reviewer);if(worker===reviewer)throw new AppError('Sidekick 和 Reviewer 必须使用不同的 Arena 会话');
           if(!['awaiting_approval','failed','paused'].includes(t.status))throw new AppError('请在任务尚未执行或已停止时绑定会话',409);
+          const tasks=await services.gateway('/tasks') as Task[];if(t.workspaceMode==='direct'&&tasks.some(other=>other.id!==t.id&&other.worktree===t.worktree&&['running','reviewing'].includes(other.status)))throw new AppError('同一目录的会话正在被其他任务使用，请先等待该任务结束',409);
           const known=await sessions(t),w=known.find(s=>s.role===t.role),r=known.find(s=>s.role==='reviewer');if(!w||!r)throw new AppError('请先点击“准备工作区”',409);
           const map=await bindings();for(const [sessionID,uuid] of [[w.runtime_id,worker],[r.runtime_id,reviewer]])if(Object.entries(map).some(([key,value])=>key!==sessionID&&String(value).toLowerCase()===uuid))throw new AppError('该 Arena 会话已绑定其他任务，请使用未绑定的独立会话',409);
           for(const [sessionID,arenaSessionID] of [[w.runtime_id,worker],[r.runtime_id,reviewer]])await services.gateway('/arena/bindings','POST',{sessionID,arenaSessionID});json(res,200,{ok:true});return;
         }
         if(req.method==='POST' && action?.startsWith('permissions/')){
+          if(!['running','reviewing'].includes(t.status))throw new AppError('只能处理当前正在执行任务的工具审批',409);
           const requestID=decodeURIComponent(action.slice('permissions/'.length)),input=await readJSON(req) as any;if(!['once','reject'].includes(input?.reply))throw new AppError('只允许本次批准或拒绝');
           if(!t.worktree)throw new AppError('工作区尚未创建');const known=await sessions(t),worker=known.find(s=>s.role===t.role);
           const pending=await runtime.request('/permission',t.worktree).then(r=>r.json()) as any[];
