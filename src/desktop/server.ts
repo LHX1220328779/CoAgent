@@ -62,7 +62,7 @@ export function createConsole(services:LocalServices){
         const input=await readJSON(req) as any;
         if(typeof input?.email!=='string'||typeof input?.password!=='string'||!input.email.trim()||!input.password)throw new AppError('请填写邮箱和密码');
         const response=await fetch(services.urls.bridge+'/api/accounts/login',{method:'POST',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`,'content-type':'application/json'},body:JSON.stringify({email:input.email,password:input.password}),signal:AbortSignal.timeout(120000)});
-        const result=await response.json().catch(()=>null) as any;if(!response.ok)throw new AppError(`桥接登录未成功${result?.error?.upstreamStatus?'，Arena 返回 '+result.error.upstreamStatus:' ('+response.status+')'}。请在 Arena 网页正常登录并处理验证后重试。`,422);
+        const result=await response.json().catch(()=>null) as any;if(!response.ok){const stage=({page:'打开 Arena 页面',credentials:'提交账号登录',session:'确认登录状态',network:'连接 Arena'} as Record<string,string>)[result?.error?.stage]??'桥接登录';throw new AppError(`${stage}未成功${result?.error?.upstreamStatus?'，Arena 返回 '+result.error.upstreamStatus:' ('+response.status+')'}。请检查浏览器网络代理，或在 Arena 网页正常完成登录。`,422);}
         const synced=await services.gateway('/arena/pool','POST',{}).catch(()=>null);json(res,200,{ok:true,synced:Boolean(synced)});return;
       }
       if(req.method==='POST'&&path==='/api/arena/sync'){json(res,200,await services.gateway('/arena/pool','POST',{}));return;}
