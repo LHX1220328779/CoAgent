@@ -9,7 +9,7 @@ import { runtimeEnvironment } from './runtime/environment.ts';
 import { runtimeConfig } from './runtime/config.ts';
 import { OpenCodeRuntime } from './runtime/opencode.ts';
 import { ModelRouter } from './gateway/router.ts';
-import { MockAdapter, OpenAIAdapter, ArenaResearchAdapter, ArenaAgentAdapter } from './gateway/adapters.ts';
+import { MockAdapter, OpenAIAdapter, ArenaResearchAdapter, ArenaAgentAdapter, arenaContextBudget } from './gateway/adapters.ts';
 import { createApp } from './server.ts';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const [command='help',arg,extra]=process.argv.slice(2);
@@ -24,7 +24,7 @@ async function main(){
     const orchestrator=new Orchestrator(store,runtime,new GitWorktrees('.coagent/worktrees'),mode==='arena'?1:Number(process.env.COAGENT_CONCURRENCY ?? 2));
     const router=new ModelRouter({record:r=>store.record(r),...(mode==='arena'?{concurrency:1,retries:0,allowSimulatedTools:process.env.COAGENT_ALLOW_SIMULATED_TOOLS==='1',timeoutMs:600000}:{})});
     const upstreamURL=process.env.LITELLM_URL ?? 'http://127.0.0.1:4000/v1',upstreamKey=process.env.LITELLM_MASTER_KEY ?? '';
-    const adapter=mode==='arena'?new ArenaAgentAdapter(process.env.ARENA_BRIDGE_URL ?? 'http://127.0.0.1:20140/v1',process.env.ARENA_BRIDGE_KEY ?? '',process.env.ARENA_SESSION_BINDINGS ?? '.coagent/arena-sessions.json'):mode==='mock'?new MockAdapter():new OpenAIAdapter('litellm',upstreamURL,upstreamKey);
+    const adapter=mode==='arena'?new ArenaAgentAdapter(process.env.ARENA_BRIDGE_URL ?? 'http://127.0.0.1:20140/v1',process.env.ARENA_BRIDGE_KEY ?? '',process.env.ARENA_SESSION_BINDINGS ?? '.coagent/arena-sessions.json',process.env.COAGENT_ARENA_DEBUG_DIR,arenaContextBudget(process.env.ARENA_CONTEXT_BUDGET_BYTES)):mode==='mock'?new MockAdapter():new OpenAIAdapter('litellm',upstreamURL,upstreamKey);
     for(const alias of ['lead','sidekick','reviewer'])router.register(alias,{adapter,model:alias});
     if(process.env.ARENA_RESEARCH_URL)router.register('arena-research',{adapter:new ArenaResearchAdapter(process.env.ARENA_RESEARCH_URL,process.env.ARENA_RESEARCH_KEY ?? ''),model:process.env.ARENA_RESEARCH_MODEL ?? 'research'});
     const server=createApp({key,router,store,orchestrator,runtime,...(adapter instanceof ArenaAgentAdapter?{arena:adapter}:{}),...(mode==='litellm'?{litellm:{url:upstreamURL,key:upstreamKey}}:{})});

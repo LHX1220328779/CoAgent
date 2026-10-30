@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { arenaCapabilities } from '../gateway/adapters.ts';
+import { arenaCapabilities, arenaContextBudget } from '../gateway/adapters.ts';
 
 /** Generate a V1 config without modifying the user's template or embedding secrets. */
 export async function runtimeConfig(templatePath: string, stateDirectory: string, env: NodeJS.ProcessEnv = process.env) {
@@ -14,7 +14,7 @@ export async function runtimeConfig(templatePath: string, stateDirectory: string
   provider.options.baseURL = `http://127.0.0.1:${port}/v1`;
   if (mode === 'arena') {
     for (const model of Object.values(provider.models) as {limit: {context: number; output: number}}[]) {
-      model.limit.context = Math.min(model.limit.context,arenaCapabilities.contextWindow);
+      model.limit.context = Math.min(model.limit.context,arenaContextBudget(env.ARENA_CONTEXT_BUDGET_BYTES));
       model.limit.output = Math.min(model.limit.output,arenaCapabilities.maxOutput);
     }
     // All Arena delegation is managed by Supervisor so each role can be bound first.

@@ -2,6 +2,7 @@ node_modules/
 .venv/
 .env
 .coagent/
+/arena-local-bridge/
 *.db
 *.db-shm
 *.db-wal

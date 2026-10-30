@@ -20,6 +20,7 @@ export interface Task {
   attempts: number; maxAttempts: number; timeoutMs: number; worktree: string | null;
   result: string | null; error: string | null; acceptance: string[] | null;
   requiresApproval: boolean; approved: boolean; createdAt: number; updatedAt: number;
+  reviewPending?: boolean;
 }
 export interface TaskExecution { id: string; taskID: string; attempt: number; startedAt: number; finishedAt: number | null; status: TaskStatus; error: string | null }
 export interface RuntimeResult { text: string; usage: ModelUsage; parts: unknown[] }

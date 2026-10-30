@@ -78,6 +78,9 @@ export class ModelRouter {
             circuit.failures = 0; circuit.openUntil = 0; success = true; yield finish; return;
           } catch (error) {
             signal.throwIfAborted(); last = error;
+            if(cap.tools==='simulated' && error instanceof AppError && error.code==='protocol_error'){
+              const terminal=new AppError(error.message,422,'protocol_error');terminal.cause=error;throw terminal;
+            }
             if (!(error instanceof AppError) || !error.retryable || emitted) throw error;
             if (++circuit.failures >= 3) circuit.openUntil = Date.now() + 30000;
             if (attempt < this.retries) await delay(Math.max(error.retryAfterMs, 100 * 2 ** attempt + Math.random() * 50), undefined, { signal });

@@ -2,7 +2,7 @@
 
 本地 TypeScript Supervisor + OpenCode V1 + 可插拔模型网关。首要研究目标是接入用户授权的 **Arena Agent 网页免费额度**；不要求使用付费推理 API，不提供配额或验证绕过。
 
-已实现任务 DAG、持久会话、独立 Worktree、Reviewer、审批/暂停/取消/恢复、协议校验和事件流。Arena 在线行为尚需用户安装本机桥接并登录后验收。完整范围、证据与限制见 [技术方案](docs/technical-design.md) 和 [测试记录](docs/validation.md)。
+已实现任务 DAG、持久会话、独立 Worktree、Reviewer、审批/暂停/取消/恢复、协议校验和事件流。已通过 Arena 在线小任务的本地编辑、独立审查及外部测试验收；首次使用需要已登录的本机桥接和独立网页会话。真实证据见 [测试记录](docs/validation.md)，完整范围与限制见 [技术方案](docs/technical-design.md)。
 
 ## 环境与启动
 

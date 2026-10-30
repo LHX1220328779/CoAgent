@@ -39,3 +39,15 @@ test('a submitted runtime turn is not replayed after a transient model failure',
   assert.equal(s.store.task('once').status,'failed');assert.equal(s.store.task('once').attempts,1);assert.equal(writes,1);
  }finally{await s.close();}
 });
+test('resume after a reviewer transport failure reuses the completed worker result without rewriting files',async()=>{
+ const s=await setup();let writes=0,reviews=0;
+ try{
+  s.runtime.handler=async(role,directory)=>{
+   if(role==='reviewer'){if(++reviews===1)throw new RuntimeExecutionError('review transport failed',422);return '{"approved":true,"findings":[]}';}
+   await writeFile(join(directory,'write-count.txt'),String(++writes));return 'Worker completed';
+  };
+  s.store.add([taskFromInput({id:'checkpoint',prompt:'Work',repo:s.repo,requiresApproval:false})]);
+  await s.orch.tick();await s.orch.idle();assert.equal(s.store.task('checkpoint').status,'failed');assert.equal(s.store.task('checkpoint').reviewPending,true);
+  s.orch.resume('checkpoint');await s.orch.tick();await s.orch.idle();assert.equal(s.store.task('checkpoint').status,'succeeded');assert.equal(writes,1);assert.equal(reviews,2);assert.equal(s.store.task('checkpoint').reviewPending,false);
+ }finally{await s.close();}
+});

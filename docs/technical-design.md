@@ -91,7 +91,7 @@ Devin BYOK 可保留原生 Fusion UX，但内部宿主兼容成本更高；OpenC
 
 - OpenAIAdapter：标准 Chat SSE 上游，保留消息、工具和请求参数；不解析或执行自然语言命令。
 - ArenaResearchAdapter：只读文本研究通道，禁止编码工具。
-- ArenaAgentAdapter：已授权本机桥接端点；session header → 显式绑定文件 → 已存在的 Arena Agent UUID。禁止同一 Arena session 分配给两个 Agent；不自动创建或采集会话。
+- ArenaAgentAdapter：已授权本机桥接端点；session header → 显式绑定文件 → 已存在的 Arena Agent UUID。实际 UUID 路径忽略上游请求的工具字段，所以本适配器将消息和工具 Schema 显式编码进文本，并解析带本轮标识的工具帧，随后继续进行 Schema 校验。最终答复帧按相同标识解封，Reviewer 的 JSON 不混入前导说明。禁止同一 Arena session 分配给两个 Agent；不自动创建或采集会话。
 - MockAdapter：确定性协议测试；usage 标为估计值，不代表模型效果。
 - LiteLLM：处理供应商及 Responses/Messages 协议转换，版本锁定 1.106.6。
 
@@ -109,7 +109,7 @@ SSE 使用增量 TextDecoder，支持拆包 UTF-8、CRLF、多行 data、心跳�
 
 任务状态：queued → awaiting_approval → running → reviewing → succeeded。错误进入 failed；依赖失败进入 blocked；显式 pause/cancel 中断执行。恢复不会把中断中的工具调用当作幂等操作重放：数据库启动时将 running/reviewing 转成 paused，用户检查 Worktree 后显式 resume。
 
-每个工作目录和角色对应一个持久 OpenCode Session；重试复用 Worker Session，Reviewer 使用独立 Session。OpenCode 保存完整历史，Supervisor 仅保存 session ID、最新报告及角色模型。模型切换显式传 model，不重新创建 Session。跨 Agent 传递依赖任务报告和 Worktree 路径，不共享聊天内存。Prompt 缓存是上游能力，不保证命中；上下文压缩使用 Runtime summarize 合约，不自造隐式截断。
+每个工作目录和角色对应一个持久 OpenCode Session；重试复用 Worker Session，Reviewer 使用独立 Session。OpenCode 保存完整历史，Supervisor 仅保存 session ID、最新报告及角色模型。Worker 完成后保存待审查检查点；Reviewer 传输或格式失败后显式恢复只重做审查，审查拒绝或外部验收失败后才重新执行 Worker。模型切换显式传 model，不重新创建 Session。跨 Agent 传递依赖任务报告和 Worktree 路径，不共享聊天内存。Prompt 缓存是上游能力，不保证命中；上下文压缩使用 Runtime summarize 合约，不自造隐式截断。
 
 DAG 优先级高者先运行，依赖必须成功才可领取。单 Supervisor 通过 SQLite lease 防止两个进程重复调度；长任务不持有数据库事务。可配置 1–8 并发；Arena 强制 1。在每个 Worker 的独立 Worktree 中编辑和验收，不与 Lead 或其他 Worker 共享可写目录。
 
@@ -187,7 +187,7 @@ docs/               研究、验收、使用说明
 
 无需账号的自动测试使用受控 Provider 发出真实结构化工具调用，OpenCode 执行工具，测试检查文件及会话历史。普通 MockAdapter 只做协议演示，不能把它输出的 mock 文本当作可工作的编码模型。
 
-Arena 接入流程见 `arena.md`。用户尚未安装桥接服务，故实际登录与额度验证处于外部前置条件未满足状态。`prepare` 可先创建对应 OpenCode Session，用户为其绑定各自授权的 Arena Agent Session，再执行任务。
+Arena 接入流程见 `arena.md`。首次使用需完成实际登录并准备已有会话，在线验收记录以 `validation.md` 为准。`prepare` 可先创建对应 OpenCode Session，用户为其绑定各自授权的 Arena Agent Session，再执行任务。
 
 ## 12. 自动化测试与验收方案
 
@@ -215,10 +215,10 @@ SQLite lease 防止重复 Supervisor，崩溃后任务暂停供检查。重启�
 
 | 阶段 | 目标/依赖 | 文件与接口 | 自动化测试与交付 | 验收/剩余风险 |
 |---|---|---|---|---|
-| P0 | 核查来源/固定版本 | 本文、package lock、ModelCapabilities | 官方文档及固定源码记录 | 第三方真实服务未测 |
+| P0 | 核查来源/固定版本 | 本文、package lock、ModelCapabilities | 官方文档及固定源码记录 | Arena 小任务已实测；其他第三方集成未测 |
 | P1 | 协议/能力网关 | gateway/*、ModelAdapter | Chat/SSE/tool/error/cancel 测试 | 文本模拟不变为原生 |
 | P2 | 单 Agent Runtime | runtime/*、V1 config | 实际工具执行/重启/模型切换 | 只覆盖锁定版本 |
-| P3 | 持久 Sidekick/Reviewer | sessions、Orchestrator | 重试复用/独立审查 | 真实模型质量需外部验证 |
+| P3 | 持久 Sidekick/Reviewer | sessions、Orchestrator | 重试复用/独立审查及 Arena 在线小任务 | 复杂任务质量未验证 |
 | P4 | DAG/Worktree | Store、GitWorktrees | 环拒绝/隔离/审批/依赖 | 无自动合并队列 |
 | P5 | 并发与验收 | acceptance argv、任务控制 | 多 Worker 同文件隔离/拒绝审查 | 并发收益不作推断 |
 | P6 | 恢复与观测 | lease、events、metrics | DB 重启/超时/取消 | 未完成多日 soak |
@@ -228,7 +228,7 @@ SQLite lease 防止重复 Supervisor，崩溃后任务暂停供检查。重启�
 
 ## 15. 未解决问题和验证顺序
 
-优先级 1：用户安装并授权本机 Arena 桥接，人工正常登录，绑定两个独立现有 Agent 会话，单 Worker 完成一次 read/edit/tool-result 回合。
+已完成：用户授权的本机 Arena 桥接与两条独立现有会话，经真实 OpenCode 工具完成本地 read/edit/read、独立 Reviewer 审查及 Supervisor 外部验收；详见 `validation.md`。这证明一个小型修复任务的完整链路，不代表复杂任务可靠性。
 
 优先级 2：确认浏览器侧取消是否真的停止执行；验证上下文累积、模型身份、实际 Token 统计与配额耗尽响应。无法确认时保持串行，禁止自动重放。
 
@@ -238,7 +238,7 @@ SQLite lease 防止重复 Supervisor，崩溃后任务暂停供检查。重启�
 
 ### 五个明确回答
 
-**Q1**：不能把所查 Arena 项目直接统称为完整 Coding Provider。Chat 包装存在源码证据，工具/多轮/取消各有缺口；arena-local-bridge 最接近 Agent 场景，但使用文本模拟，本环境只完成等效协议和真实 Runtime 测试，未验证 Arena 在线行为。
+**Q1**：不能把所查 Arena 项目直接统称为完整 Coding Provider。Chat 包装存在源码证据，工具/多轮/取消各有缺口；arena-local-bridge 的 UUID 路径需要额外封装工具上下文。CoAgent 已在用户授权的 Arena 在线会话中，以文本模拟工具协议完成一个真实本地修复任务、独立审查和测试；复杂编程质量、远端取消及额度边界仍待验证。
 
 **Q2**：V2 是真实存在的新产品版本，但对本轮最快交付而言，V1 1.19.5 的已核验 HTTP 契约更合适。两个 Issue 不构成 V2 的决定性缺陷证据；本方案不声称 V2 不可用。
 
@@ -246,4 +246,4 @@ SQLite lease 防止重复 Supervisor，崩溃后任务暂停供检查。重启�
 
 **Q4**：统一内部事件合约，能力先检验，SSE 和 tool 参数严格校验，LiteLLM 提供正式协议转换；独立 Session/Worktree、有限并发、持久状态、明确取消与恢复。Arena 工具模拟须显式授权，不能伪装为原生能力。
 
-**Q5**：先 types/protocol/adapters + 协议测试，再 Runtime + 实际工具执行，再 Store/orchestrator/worktree + 完整链路测试。本仓库已按此结构实施；下一项外部验收是用户授权的 Arena Agent 实际会话。
+**Q5**：先 types/protocol/adapters + 协议测试，再 Runtime + 实际工具执行，再 Store/orchestrator/worktree + 完整链路测试。本仓库已按此结构实施，并已完成用户授权 Arena 会话的小任务在线验收；下一步验证范围见本节优先级列表。

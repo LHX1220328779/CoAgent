@@ -21,7 +21,7 @@ async function freePort(){const server=createServer();server.listen(0,'127.0.0.1
 async function stop(child:ChildProcess){if(child.exitCode!==null)return;child.kill('SIGTERM');await Promise.race([once(child,'exit'),delay(3000).then(()=>{if(child.exitCode===null)child.kill('SIGKILL');})]);}
 
 test('Arena mode with real OpenCode: generated config, session binding, local tools, review and terminal quota',{timeout:90000},async()=>{
-  const f=await repoFixture();const seen:{session:string;model:string;maxTokens:number}[]=[];let child:ChildProcess|undefined;let logs='';
+  const f=await repoFixture();const seen:{session:string;model:string;maxTokens:number}[]=[];const turns=new Map<string,number>();let child:ChildProcess|undefined;let logs='';
   const uuid=(n:number)=>`00000000-0000-0000-0000-${String(n).padStart(12,'0')}`;
   const bridge=createServer(async(req,res)=>{
     assert.equal(req.headers.authorization,'Bearer fixture-bridge-key');
@@ -29,17 +29,22 @@ test('Arena mode with real OpenCode: generated config, session binding, local to
     const request=JSON.parse(raw),session=String(req.headers['x-codex-session-id'] ?? '');
     seen.push({session,model:request.model,maxTokens:request.max_tokens});
     if(request.model===uuid(3)){res.writeHead(429);res.end();return;}
-    const messages=request.messages as any[];const lastUser=messages.findLastIndex(m=>m.role==='user');
-    const results=messages.slice(lastUser+1).filter(m=>m.role==='tool');
+    // Match the real bridge's UUID path: it reads only the last user text and
+    // returns text, without interpreting tools or converting XML to tool_calls.
+    const prompt=request.messages.at(-1).content as string;
+    assert.equal(request.messages.length,1);assert.match(prompt,/"tools":/);
+    const turn=(turns.get(session) ?? 0)+1;turns.set(session,turn);
     res.writeHead(200,{'content-type':'text/event-stream'});
     const chunk=(delta:unknown,finish:string|null=null)=>res.write(`data: ${JSON.stringify({id:'chatcmpl-arena-fixture',object:'chat.completion.chunk',created:1,model:request.model,choices:[{index:0,delta,finish_reason:finish}]})}\n\n`);
     const reviewer=request.model===uuid(2);
-    if(!results.length){
+    if(turn===1){
       const name=reviewer?'read':'bash';
       const args=reviewer?{filePath:'proof.txt'}:{command:"printf 'verified\\n' > proof.txt",description:'Write local proof'};
-      chunk({role:'assistant',tool_calls:[{index:0,id:reviewer?'call_review':'call_write',type:'function',function:{name,arguments:JSON.stringify(args)}}]});chunk({},'tool_calls');
+      const requestID=prompt.match(/"request_id":"([^"]+)"/)![1];
+      chunk({role:'assistant',content:`Requesting the local tool.\n<coagent_tool_call>${JSON.stringify({request_id:requestID,name,arguments:args})}</coagent_tool_call>`});chunk({},'stop');
     }else{
-      const text=reviewer?JSON.stringify({approved:JSON.stringify(results).includes('verified'),findings:[]}):'Wrote proof.txt through the local tool';
+      assert.match(prompt,/tool_call_id/);
+      const text=reviewer?JSON.stringify({approved:prompt.includes('1: verified'),findings:[]}):'Wrote proof.txt through the local tool';
       chunk({role:'assistant',content:text});chunk({},'stop');
     }
     res.end('data: [DONE]\n\n');

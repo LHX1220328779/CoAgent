@@ -1,6 +1,6 @@
 # Arena Agent 免费额度接入
 
-这里使用的是 Arena 网页 Agent 会话，不是付费 API。CoAgent 不能替你生成免费额度；实际可用性由你的账号、授权和服务状态决定。当前环境没有安装桥接服务，也没有登录会话，因此实际线上链路尚未验收。
+这里使用的是 Arena 网页 Agent 会话，不是付费 API。CoAgent 不能替你生成免费额度；实际可用性由你的账号、授权和服务状态决定。首次使用需启动本机桥接、正常登录并准备独立会话；实际在线验收结果见 [验证记录](validation.md)。
 
 ## 启用本机桥接
 
@@ -49,6 +49,8 @@ ARENA_BRIDGE_URL=http://127.0.0.1:20140/v1
 ARENA_BRIDGE_KEY=你的本机桥接服务密钥
 ARENA_SESSION_BINDINGS=.coagent/arena-sessions.json
 COAGENT_ALLOW_SIMULATED_TOOLS=1
+# 可选：本地请求字节预算，不是上游模型官方上下文上限。
+ARENA_CONTEXT_BUDGET_BYTES=65536
 ```
 
 这里的桥接密钥仅用于本地 HTTP 鉴权，不是 Arena 官方推理 API key。`COAGENT_ALLOW_SIMULATED_TOOLS=1` 明确允许实验性文本工具协议；不设置时仍可研究文本聊天，但含工具的 Coding 请求会被拒绝。
@@ -81,6 +83,16 @@ npm run coagent -- bind ses_真实Reviewer会话ID 已有Reviewer的Arena会话U
 
 V1 `chat.headers` 插件把真实 Session ID 传给网关，适配器将其转发为桥接的 `x-codex-session-id`，并用映射的现有 Arena UUID 作为模型。禁止两个 OpenCode Session 共享一个 Arena UUID。不会根据第一条 prompt 猜测会话身份，也不会默默切换到 active/自动创建会话。
 
+## UUID 会话的工具协议
+
+核查到的上游 `converse()` 路径只发送最后一条用户文本，并返回普通文本；它不自动处理 Chat 请求中的工具定义和历史工具结果。因此 CoAgent 将完整消息、工具 Schema 和本轮标识序列化为一条用户消息，再将模型明确输出的 `<coagent_tool_call>` 帧转换为 OpenCode 工具调用。
+
+工具名、参数 Schema 和调用结果 ID 仍严格校验。带前导说明的帧必须包含本轮准确的随机标识；错误标识、残缺 JSON 和未知工具不会被执行。工具协议回合先缓冲完整响应再解析，因此 Arena 模式的 SSE 不代表逐 Token 的实时展示；原生 Chat/LiteLLM 路径仍支持增量文本。
+
+最终答复使用带同一本轮标识的 `<coagent_final>` 帧，适配器只交付其中的 `content`。Reviewer 的 `content` 直接放置审查 JSON 对象，避免前导说明混入 Supervisor 的 JSON 解析；不从任意自然语言中猜测或补造审查结论。
+
+审查传输或格式出错时保留已完成的 Worker 报告，`resume` 从 Reviewer 继续；若审查明确拒绝或验收测试失败，则后续恢复重新交给 Worker。
+
 可通过 `submit` 明确提供任务 DAG；也可先运行 `npm run coagent -- plan-prepare goal.json` 创建持久 Lead Session，在绑定文件中加入其独立 Arena 会话后，再运行 `npm run coagent -- plan goal.json`。两条命令复用同一仓库的 Lead Session，不会每次创建未绑定会话。
 
 ## 实验边界
@@ -89,9 +101,12 @@ V1 `chat.headers` 插件把真实 Session ID 传给网关，适配器将其转�
 - 桥接若声称远端工具已执行，本地没有相应文件及工具结果，则验收失败。
 - 会话身份不等于模型身份。不能把网页模型名当作收费模型质量保证。
 - CoAgent 的取消会断开本地请求、停止 Runtime；桥接是否中断远端 Agent 仍需实际验证。未确定远端停止前不要重放任务。
-- 默认保守 32768 字节上下文预算、4096 输出预算并非 Arena 官方保证值；Runtime 启动时会生成匹配的模型限制。过长请求会被本地拒绝，应先在 Runtime 做明确摘要。Arena 模式的子任务由 Supervisor 调度，避免 Runtime 临时生成未绑定的子会话。
+- 默认保守 32768 字节上下文预算、4096 输出预算并非 Arena 官方保证值；可用 `ARENA_CONTEXT_BUDGET_BYTES` 调整本地预算，Runtime 启动时同步模型限制。本机实验使用 65536 字节。过长请求会被本地拒绝，应先在 Runtime 做明确摘要。Arena 模式的子任务由 Supervisor 调度，避免 Runtime 临时生成未绑定的子会话。
+- 排查协议时可显式设置 `COAGENT_ARENA_DEBUG_DIR=.coagent/arena-responses`，模型返回仅写入本机权限受限的文件；这些文件可能含项目内容，排查后应关闭该配置，不提交到仓库。
 - 不进行并发压测来试探免费额度。先完成一次小任务与工具结果往返，记录实际响应和额度，再决定是否扩大实验。
 
 ## 首次线上验收记录
 
-用户登录后，依次记录：桥接版本、现有会话绑定、工具执行结果、文件 diff、验收命令、Reviewer 结论、取消结果、上下文保留、429/授权失败表现。禁止将本仓库 Mock 测试结果填写为 Arena 在线测试结果。
+2026-10-30 已通过用户授权的两条现有 Arena Agent 会话，实际完成本地 `sum.cjs` 的读取、修改、复读、独立审查及外部 Node 测试，任务状态为 `succeeded`。桥接版本为 1.1.0，Runtime 为 OpenCode 1.19.5；详细证据与联调失败记录见 [验证记录](validation.md)。未使用付费模型 API。
+
+线上取消、真实额度耗尽、长时间稳定性及多 Agent 性能对比尚未验证；本地 Fixture 的对应测试不能代替这些线上结果。

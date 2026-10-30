@@ -26,6 +26,8 @@ test('runtime config aligns Arena model limits and gateway port without altering
     assert.match(config.plugin[0],/^file:\/\//);
     assert.equal(config.provider.coagent.options.apiKey,'{env:COAGENT_API_KEY}');
     assert.equal(await readFile(template,'utf8'),before);
+    const expanded=JSON.parse(await readFile(await runtimeConfig(template,root,{COAGENT_MODE:'arena',ARENA_CONTEXT_BUDGET_BYTES:'65536'}),'utf8'));
+    assert.equal(expanded.provider.coagent.models.sidekick.limit.context,65536);
     const normal=JSON.parse(await readFile(await runtimeConfig(template,root,{COAGENT_MODE:'mock'}),'utf8'));
     assert.equal(normal.provider.coagent.models.sidekick.limit.output,8192);
   }finally{await rm(root,{recursive:true,force:true});}
