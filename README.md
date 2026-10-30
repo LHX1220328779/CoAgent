@@ -4,6 +4,8 @@
 
 已实现任务 DAG、持久会话、独立 Worktree、Reviewer、审批/暂停/取消/恢复、协议校验和事件流。已通过 Arena 在线小任务的本地编辑、独立审查及外部测试验收；首次使用需要已登录的本机桥接和独立网页会话。真实证据见 [测试记录](docs/validation.md)，完整范围与限制见 [技术方案](docs/technical-design.md)。
 
+日常操作从根目录 [使用手册](使用手册.md) 开始；接续开发先读 [开发状态](开发状态.md)。
+
 ## 环境与启动
 
 要求 Node 24、npm、Git。Python/LiteLLM 只在 `litellm` 模式需要。OpenCode 固定 1.19.5，局部安装，不覆盖全局命令。
