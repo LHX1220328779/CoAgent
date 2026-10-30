@@ -1,0 +1,31 @@
+# Run with .venv/bin/litellm --config config/litellm.yaml --host 127.0.0.1 --port 4000
+# Supply an authorized OpenAI-compatible upstream. Model aliases keep Supervisor unchanged.
+model_list:
+  - model_name: lead
+    litellm_params:
+      model: os.environ/LEAD_UPSTREAM_MODEL
+      use_chat_completions_api: true
+      api_base: os.environ/UPSTREAM_BASE_URL
+      api_key: os.environ/UPSTREAM_API_KEY
+  - model_name: sidekick
+    litellm_params:
+      model: os.environ/SIDEKICK_UPSTREAM_MODEL
+      use_chat_completions_api: true
+      api_base: os.environ/UPSTREAM_BASE_URL
+      api_key: os.environ/UPSTREAM_API_KEY
+  - model_name: reviewer
+    litellm_params:
+      model: os.environ/REVIEWER_UPSTREAM_MODEL
+      use_chat_completions_api: true
+      api_base: os.environ/UPSTREAM_BASE_URL
+      api_key: os.environ/UPSTREAM_API_KEY
+litellm_settings:
+  drop_params: false
+  set_verbose: false
+router_settings:
+  num_retries: 0
+  timeout: 120
+  allowed_fails: 3
+  cooldown_time: 30
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

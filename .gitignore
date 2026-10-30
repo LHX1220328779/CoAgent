@@ -1,0 +1,9 @@
+node_modules/
+.venv/
+.env
+.coagent/
+*.db
+*.db-shm
+*.db-wal
+
+.aws
