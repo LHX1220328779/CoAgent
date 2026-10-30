@@ -87,7 +87,7 @@ export function createConsole(services:LocalServices){
           const known=await sessions(t),map=await bindings();let permissions:any[]=[];
           if(t.worktree && ['running','reviewing'].includes(t.status)){
             const response=await runtime.request('/permission',t.worktree).catch(()=>null);
-            if(response){const all=await response.json() as any[];permissions=all.filter(p=>known.some(s=>s.runtime_id===p.sessionID&&s.role===t.role)).map(p=>({id:p.id,permission:p.permission,patterns:p.patterns,command:typeof p.metadata?.command==='string'?p.metadata.command:undefined}));}
+            if(response){const all=await response.json() as any[];permissions=all.filter(p=>known.some(s=>s.runtime_id===p.sessionID&&s.role===t.role)).map(p=>({id:p.id,permission:p.permission,patterns:p.patterns,toolCallID:p.tool?.callID,command:typeof p.metadata?.command==='string'?p.metadata.command:undefined}));}
           }
           const pool=await services.gateway('/arena/pool').catch(()=>null) as any;
           const events=t.worktree?await activity(runtime,t.worktree,known):[];

@@ -1,5 +1,16 @@
 # 验证记录
 
+## 2026-10-31 ACP 客户端适配
+
+- 最终 `npm run check` 通过；`node --test tests/acp.test.ts tests/integration/arena-opencode.test.ts` 的 **9 项测试全部通过**（8 项 ACP 契约 + 1 项真实 OpenCode 进程集成）。未重复无关的全量测试。
+- 本轮沿用 OpenCode V1 1.19.5 和现有 Supervisor / ArenaPool，新增 ACP v1 stdio 入口；没有升级依赖、调用 Devin 原生模型或恢复旧 Electron UI WIP。
+- 实际执行 `启动CoAgentACP.sh` 的 JSON-RPC 初始化：退出 0，协商 protocolVersion=1，stdout 只有一条有效协议响应，没有启动模型请求。
+- ACP 契约覆盖创建/续接/持久历史重放、角色原始标题、真实工具输入输出映射、仅本次审批、拒绝未知选项、任务失败不报告 end_turn、准备中取消不再批准任务、同一会话并发独占，以及 registry 合并保留其他 Agent。新增取消测试使用阶段同步，避免依赖进程启动耗时。
+- 固定版真实 OpenCode 的 ACP 进程链路：`ACP → CoAgent 控制 API → Supervisor / ArenaPool → OpenCode`，自动分配两个账号的会话及原始标题；客户端批准真实 shell 工具，实际写入本机 proof.txt；独立 Reviewer 为原生子会话，Supervisor 外部验收通过。随后沿用同一 Native Session 追加需求，重新连接后重放历史不增加执行次数；显式归还后可重新分配，再归还。
+- 审批关联使用 OpenCode Permission 的 tool.callID 和原生工具 callID；不以“最后一个待执行工具”猜测命令。无法关联且缺少原生命令信息时只提供拒绝选项。
+- 上述进程测试中的模型响应、账号和会话历史来自受控 Fixture；文件、命令、Runtime、审查和外部验收为真实本机执行。不是本轮新的 Arena 在线模型或远程 MCP 验收，之前在线成功/失败边界继续保留。
+- Devin Desktop 本机尚未安装；没有运行用户 registry 注册命令，也没有验证其窗口、版本、自动 MCP 注入及界面布局。不能将通用 ACP 客户端验证描述为 Devin Desktop 图形 E2E 已通过。
+
 ## 2026-10-31 协议与 MCP 真实流程联调（部分通过）
 
 - 任务传输使用已认证 HTTP append / V2 SSE，`domActions=0`；历史发现改为分页 HTTP 接口，保留实际标题、所属账号及任务独占关系。登录窗口的安全验证与任务协议分开，不绕过验证或静默回退 DOM。

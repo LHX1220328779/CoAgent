@@ -1,10 +1,10 @@
 # CoAgent 技术研究与实施方案
 
-核查日期：2026-10-29。本文记录明确决策、证据范围及对应实现；实际运行结果见 `validation.md`。用户最新指令要求在研究后继续开发，因此本仓库包含实现，不只停留在原提示词的方案阶段。
+初版核查日期：2026-10-29；客户端架构更新：2026-10-31。本文记录明确决策、证据范围及对应实现；实际运行结果见 `validation.md`。用户最新指令要求在研究后继续开发，因此本仓库包含实现，不只停留在原提示词的方案阶段。
 
 ## 1. 执行摘要
 
-主架构选 C：独立 TypeScript Supervisor + OpenCode Runtime + 可替换模型适配器；正式多协议网关采用 LiteLLM。Arena Agent 网页免费额度是首要研究场景，保留独立直连本机桥接服务的 `arena` 模式。它不要求付费推理 API，但需要用户有权使用的 Arena 账号、现有 Agent 会话和本机桥接服务。没有登录会话时只能完成等效协议实验，不能宣称已验证免费额度。
+主架构选 C：独立 TypeScript Supervisor + OpenCode Runtime + 可替换模型适配器；正式多协议场景可选 LiteLLM；当前 Arena / ACP 路径不要求启动它。Arena Agent 网页免费额度是首要研究场景，保留独立直连本机桥接服务的 `arena` 模式。它不要求付费推理 API，但需要用户有权使用的 Arena 账号、现有 Agent 会话和本机桥接服务。没有登录会话时只能完成等效协议实验，不能宣称已验证免费额度。
 
 固定 OpenCode **V1 1.19.5**，通过 V1 HTTP API 和一个 V1 `chat.headers` 插件连接。在线 npm 核查 V2 包 `@opencode/cli` 为 **2.2.1**，与 V1 包 `opencode-ai` 不同。V2 服务端契约改变，暂不迁移，绝不将 V1 SDK 的 `/v2` 导出误称为产品 V2。[V1 文档](https://opencode.ai/docs/)；[V2 迁移文档](https://opencode.ai/v2/docs/migrate-v1/)；[V1 发布](https://github.com/anomalyco/opencode/releases/tag/v1.19.5)。这些版本只代表本次核查时间，后续运行不会自动升级。
 
@@ -84,6 +84,30 @@ Devin BYOK 可保留原生 Fusion UX，但内部宿主兼容成本更高；OpenC
 | 企业扩展 | 2 | 3 | 4 | 3 |
 
 选择 C。A 的内部扩展接口及账号依赖难以稳定维护；B 把后台任务生命期绑在插件进程里；D 重复实现工具沙箱、编辑器、上下文及 Agent 循环。C 复用 Runtime，独立持久化任务，并通过单一适配层更换上游。
+
+### 5.1 已确认的客户端路线（2026-10-31）
+
+执行内核继续使用 OpenCode V1 1.19.5；CoAgent Supervisor 管理账号池、任务独占、工作区、审批与验收。客户端优先通过 ACP 接入，Devin Desktop 为候选宿主，现有本机管理页面继续承担账号登录和会话池管理。不把 Devin 原生执行器叠加到现有工具循环，也不采用其内部 VSIX 注入接口。
+
+```mermaid
+flowchart TD
+  Client[Devin Desktop 或其他 ACP 客户端] -->|ACP v1 stdio| ACP[CoAgent ACP 入口]
+  ACP -->|本机 HTTP 控制 API| Supervisor[CoAgent Supervisor 与账号池]
+  Supervisor -->|V1 HTTP API| Runtime[OpenCode 1.19.5]
+  Runtime --> Gateway[模型网关与 Arena 协议适配]
+  Runtime --> Tools[本地或已授权 MCP 工具]
+  Console[本机账号管理页面] --> Supervisor
+```
+
+采用公开 ACP v1 的初始化、会话创建/列表/加载、文本 prompt、工具通知、权限请求与取消流程；不使用 ACP v2 草案。Devin 官方支持通过 ACP 运行 OpenCode 及自定义 Agent，但直接启动 OpenCode 会绕过本项目的任务分配，因此注册的是 CoAgent 入口。[Devin ACP](https://docs.devin.ai/desktop/acp) / [ACP v1](https://agentclientprotocol.com/protocol/v1/initialization)。
+
+- `session/new` 只保存所选普通目录及 ACP 元数据，不消耗模型额度。首次发送任务才创建、准备、分配并批准 Supervisor 任务；同一 ACP 会话持久映射同一任务，后续 prompt 沿用 Native Session。Arena 原始标题由实际分配信息传回客户端。
+- 任务、工具和权限仍由原执行层处理。ACP 传递 Sidekick / Reviewer 标识、原始命令、输入、输出及补丁文本；审批根据 Native callID 关联实际操作，只提供单次允许和拒绝。缺少可靠操作关联时不提供允许选项。模型失败或审查拒绝不会伪装为正常完成。
+- ACP 元数据和已发送的对话/工具通知保存在 `.coagent/acp/`，目录 700、文件 600；加载只重放客户端记录，不重新调用模型或执行工具。Ubuntu 上用内核 flock 保持同一会话的跨进程独占，客户端异常退出后锁随进程释放。
+- 入口复用或后台启动现有本机控制台和服务，不创建第二个 Supervisor。取消及断开活动客户端映射到任务暂停，保留资源占用；归还须用户明确发送命令。既有停止未确认的限制继续有效。
+- 当前入口提供直接目录模式和文本输入；MCP 由 CoAgent 统一配置，不接受客户端额外 mcpServers 或图片/附件，不静默忽略。`/coagent-acceptance` 在首次任务前显式设置外部验收 argv。注册命令只合并自身 registry 条目，保留其他 Agent 和设置。
+
+实现位于 `src/acp/` 与 `启动CoAgentACP.sh`。这是一层独立客户端适配，不修改 OpenCode 内核或重复实现模型/工具循环。Devin Desktop 本机尚未安装，图形客户端及具体版本兼容性仍待验收；现有 Electron UI WIP 继续保存在 stash，不据此宣称桌面产品已交付。后续先完成宿主验收，再按实际缺口补充界面。
 
 ## 6. 模型网关与 Provider Adapter
 

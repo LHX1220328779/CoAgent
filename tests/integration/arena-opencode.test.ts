@@ -19,6 +19,8 @@ import { createApp } from '../../src/server.ts';
 import {ArenaPool} from '../../src/arena/pool.ts';
 import {LocalServices} from '../../src/desktop/services.ts';
 import {createConsole} from '../../src/desktop/server.ts';
+import {ConsoleBackend} from '../../src/acp/backend.ts';
+import {acpClient} from '../acp-client.ts';
 
 async function freePort(){const server=createServer();server.listen(0,'127.0.0.1');await once(server,'listening');const port=(server.address() as {port:number}).port;await new Promise<void>(r=>server.close(()=>r()));return port;}
 async function stop(child:ChildProcess){if(child.exitCode!==null)return;child.kill('SIGTERM');await Promise.race([once(child,'exit'),delay(3000).then(()=>{if(child.exitCode===null)child.kill('SIGKILL');})]);}
@@ -29,6 +31,7 @@ test('Arena mode with real OpenCode: generated config, session binding, local to
   const bridge=createServer(async(req,res)=>{
     if(req.url==='/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({ready:true,accounts:[]}));return;}
     assert.equal(req.headers.authorization,'Bearer fixture-bridge-key');
+    if(req.method==='GET'&&req.url==='/coagent/login/status'){res.setHeader('content-type','application/json');res.end(JSON.stringify({pending:[]}));return;}
     if(req.url==='/coagent/sessions'){res.setHeader('content-type','application/json');res.end(JSON.stringify({accounts:[{email:'a@example.invalid',available:true},{email:'b@example.invalid',available:true}],sessions:[1,2,3,4].map(n=>({id:uuid(n),title:`原有会话标题 ${n} · 中文`,accountEmail:n%2?'a@example.invalid':'b@example.invalid',available:true})),syncedAt:Date.now()}));return;}
     let raw='';for await(const chunk of req)raw+=chunk;
     const request=JSON.parse(raw),session=String(req.headers['x-codex-session-id'] ?? '');
@@ -100,6 +103,23 @@ test('Arena mode with real OpenCode: generated config, session binding, local to
     const exhausted=await fetch(`http://127.0.0.1:${port}/tasks/next-task/prepare`,{method:'POST',headers:{authorization:`Bearer ${key}`}});assert.equal(exhausted.status,409);
     assert.equal(pool.assignments('next-task').length,0,'insufficient resources do not reserve a partial pair');
     await client(`/tasks/${id}/release`,{});await post('/tasks/next-task/assign',{});assert.equal(pool.assignments('next-task').length,2);assert.notEqual(store.session('sidekick',project,'next-task')!.runtimeID,prepared.sessions[0].runtimeID);
+    await post('/tasks/next-task/release',{});await post('/tasks/arena-quota/release',{});
+    const acpProject=join(f.root,'acp-project');await mkdir(acpProject);const acpState=join(f.root,'acp-sessions');
+    const backend=new ConsoleBackend(f.root,{COAGENT_CONSOLE_PORT:String((consoleServer.address() as {port:number}).port)},false);
+    let acp=acpClient(backend,acpState);
+    try{
+      await acp.call('initialize',{protocolVersion:1});const session=await acp.call('session/new',{cwd:acpProject,mcpServers:[]});
+      await acp.call('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'/coagent-acceptance '+JSON.stringify(argv)}]});
+      const result=await acp.call('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'Create proof.txt containing verified and a newline using the local tool.'}]});
+      assert.equal(result.stopReason,'end_turn');assert.equal(await readFile(join(acpProject,'proof.txt'),'utf8'),'verified\n');assert.equal(acp.permissions.length,1);assert.equal(acp.permissions[0].toolCall.rawInput.command,"printf 'verified\\n' > proof.txt");
+      const metadata=JSON.parse(await readFile(join(acpState,session.sessionId+'.json'),'utf8')),acpTask=store.task(metadata.taskID),worker=store.session('sidekick',acpProject,metadata.taskID)!;assert.equal(acpTask.status,'succeeded');assert.equal(pool.assignments(acpTask.id).length,2);
+      assert.ok(acp.updates.some((u:any)=>u.update.title?.startsWith('Reviewer')));assert.ok(acp.updates.some((u:any)=>u.update.content?.text?.includes('原有会话标题')));
+      await acp.call('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'确认已有文件，保持内容不变。'}]});assert.equal(store.task(acpTask.id).status,'succeeded');assert.equal(store.session('sidekick',acpProject,acpTask.id)!.runtimeID,worker.runtimeID);
+      await acp.close();acp=acpClient(backend,acpState);await acp.call('initialize',{protocolVersion:1});await acp.call('session/load',{sessionId:session.sessionId,cwd:acpProject,mcpServers:[]});assert.equal((await acp.call('session/list')).sessions.length,1);assert.ok(acp.updates.some((u:any)=>u.update.sessionUpdate==='tool_call'));assert.equal(store.task(acpTask.id).attempts,2,'load does not replay model execution');
+      await acp.call('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'/coagent-release'}]});assert.equal(pool.assignments(acpTask.id).length,0);
+      await acp.call('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'/coagent-assign'}]});assert.equal(pool.assignments(acpTask.id).length,2);await acp.call('session/prompt',{sessionId:session.sessionId,prompt:[{type:'text',text:'/coagent-release'}]});assert.equal(pool.assignments(acpTask.id).length,0);
+      console.log(JSON.stringify({acpV1:true,nativeRuntime:'1.19.5',clientWorkflow:'ACP → CoAgent → OpenCode',originalTitles:true,oneTimePermission:true,realFileWrite:true,externalAcceptance:true,followup:true,historyReplay:true,explicitRelease:true,modelUpstream:'fixture'}));
+    }finally{await acp.close();}
     console.log(JSON.stringify({arenaTransport:'local fixture',runtime:'OpenCode 1.19.5',clientWorkflow:true,automaticMultiAccountAllocation:true,originalTitles:true,pagePermissionApprovals:approvals,taskExclusiveReuse:true,toolsExecuted:true,quotaRequests:1}));
   }finally{
     await orch.close();if(child)await stop(child);if(consoleServer){consoleServer.closeAllConnections();await new Promise<void>(r=>consoleServer!.close(()=>r()));}gateway.closeAllConnections();bridge.closeAllConnections();

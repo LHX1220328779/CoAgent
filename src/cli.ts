@@ -17,6 +17,8 @@ const [command='help',arg,extra]=process.argv.slice(2);
 const key=process.env.COAGENT_API_KEY ?? '';
 const port=Number(process.env.COAGENT_PORT ?? 4310);
 async function main(){
+  if(command==='acp'){const {runAcp}=await import('./acp/main.ts');runAcp(root,process.env);return;}
+  if(command==='acp-register'){const {registerDevin}=await import('./acp/registry.ts');console.log(JSON.stringify(await registerDevin(root),null,2));return;}
   if(command==='serve'){
     if(key.length<16)throw new Error('Set COAGENT_API_KEY (at least 16 characters); see .env.example');
     const mode=process.env.COAGENT_MODE ?? 'mock';if(!['mock','litellm','arena'].includes(mode))throw new Error('COAGENT_MODE must be mock, litellm or arena');
@@ -49,6 +51,6 @@ async function main(){
   if(command==='submit' || command==='plan' || command==='plan-prepare'){if(!arg)throw new Error('JSON file required');commands[command]={method:'POST',path:command==='plan'?'/plan':command==='plan-prepare'?'/plan/prepare':'/tasks',body:JSON.parse(await readFile(arg,'utf8'))};}
   if(commands[command]){const c=commands[command];const response=await fetch(`http://127.0.0.1:${port}${c.path}`,{method:c.method,headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:c.body===undefined?undefined:JSON.stringify(c.body)});console.log(JSON.stringify(await response.json(),null,2));if(!response.ok)process.exitCode=1;return;}
   if(command==='events'){const response=await fetch(`http://127.0.0.1:${port}/events?after=${Number(arg ?? 0)}`,{headers:{authorization:`Bearer ${key}`}});if(!response.ok)throw new Error(`HTTP ${response.status}`);if(response.body)for await(const chunk of response.body)process.stdout.write(chunk);return;}
-  console.log('CoAgent: serve | runtime | submit <tasks.json> | plan-prepare/plan <goal.json> | list | sessions | bind <session ID> <Arena UUID> | show <id> | prepare/approve/pause/resume/cancel <id> | events [cursor] | metrics');
+  console.log('CoAgent: acp | acp-register | serve | runtime | submit <tasks.json> | plan-prepare/plan <goal.json> | list | sessions | bind <session ID> <Arena UUID> | show <id> | prepare/approve/pause/resume/cancel <id> | events [cursor] | metrics');
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1;});
