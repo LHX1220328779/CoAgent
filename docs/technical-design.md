@@ -121,7 +121,7 @@ DAG 优先级高者先运行，依赖必须成功才可领取。单 Supervisor �
 
 ```mermaid
 flowchart LR
-  U[用户 CLI / OpenCode TUI / IDE] -->|控制| S[TypeScript Supervisor]
+  U[用户 本地控制台 / CLI / OpenCode TUI / IDE] -->|控制| S[TypeScript Supervisor]
   S -->|任务/审计/事件| DB[(SQLite WAL)]
   S -->|V1 HTTP| O[OpenCode 1.19.5 Runtime]
   O --> SS[独立 Agent Sessions]
@@ -141,7 +141,7 @@ flowchart LR
 
 ## 9. 技术栈、配置与目录
 
-Node 24（实测 24.21.0），TypeScript 5.9.3，npm lock；不同时引入 Bun 应用运行时。OpenCode 内部使用其自身打包运行时，不强制重建。SQLite 使用 Node 内置 `node:sqlite`，无需 Redis/Postgres。LiteLLM 独立 Python venv（Python 3.13.5 实测安装环境，最低按其官方包要求）。不加入 Docker、Langfuse、React 或自研 IDE：本地 CLI 与 OpenCode 原生 UI 足以承载首版，外部观测可以后续接入。
+Node 24（实测 24.21.0），TypeScript 5.9.3，npm lock；不同时引入 Bun 应用运行时。OpenCode 内部使用其自身打包运行时，不强制重建。SQLite 使用 Node 内置 `node:sqlite`，无需 Redis/Postgres。LiteLLM 独立 Python venv（Python 3.13.5 实测安装环境，最低按其官方包要求）。本地控制台使用原生 HTML/CSS/JavaScript 与 Node HTTP，复用已有服务；无需 React、Electron 或前端构建。外部观测可以后续接入。
 
 ```
 config/             OpenCode V1、LiteLLM 配置
@@ -183,7 +183,7 @@ docs/               研究、验收、使用说明
 
 ## 11. 最小可运行原型
 
-`npm start` 启动受鉴权本地控制/模型服务；`npm run coagent -- runtime` 启动固定版本 OpenCode；`submit` → `prepare` → `approve` → `events` 为任务路径。所有调用都使用真实 V1 HTTP 合约，不虚构 SDK 方法。
+`npm start` 启动本地网页控制台并自动连接/启动组件，重复打开复用已有进程；Ubuntu 应用菜单也可一键打开。控制台通过服务器端鉴权连接模型/任务服务，页面使用本机 Cookie、Origin 和 Host 检查，密钥不交给网页。底层服务仍可用 `npm run coagent -- serve` 与 `runtime` 单独启动；原 CLI 任务路径保留。工具审批限定当前任务的 Sidekick，仅允许本次批准或拒绝。所有 Runtime 调用使用真实 V1 HTTP 合约。
 
 无需账号的自动测试使用受控 Provider 发出真实结构化工具调用，OpenCode 执行工具，测试检查文件及会话历史。普通 MockAdapter 只做协议演示，不能把它输出的 mock 文本当作可工作的编码模型。
 
@@ -222,7 +222,7 @@ SQLite lease 防止重复 Supervisor，崩溃后任务暂停供检查。重启�
 | P4 | DAG/Worktree | Store、GitWorktrees | 环拒绝/隔离/审批/依赖 | 无自动合并队列 |
 | P5 | 并发与验收 | acceptance argv、任务控制 | 多 Worker 同文件隔离/拒绝审查 | 并发收益不作推断 |
 | P6 | 恢复与观测 | lease、events、metrics | DB 重启/超时/取消 | 未完成多日 soak |
-| P7 | 本地交互 | CLI、OpenCode 原生界面 | API 与 CLI 路径 | 独立 Web DAG 前端未实现，原生界面复用 |
+| P7 | 本地交互 | 本地网页控制台、Ubuntu 入口、CLI、OpenCode | 复用/启动组件、任务/绑定/审批/diff 的进程与 HTTP 测试 | 浏览器点击未验证，图形 DAG 编辑未实现 |
 
 开发以每阶段可运行结果推进，不等待所有模块才集成。上述清单同时说明当前交付边界，未实现项不会标为完成。
 

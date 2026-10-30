@@ -2,6 +2,8 @@
 
 这里使用的是 Arena 网页 Agent 会话，不是付费 API。CoAgent 不能替你生成免费额度；实际可用性由你的账号、授权和服务状态决定。首次使用需启动本机桥接、正常登录并准备独立会话；实际在线验收结果见 [验证记录](validation.md)。
 
+本机日常使用推荐打开应用菜单 **CoAgent**，或运行 `npm start` 后进入 `http://127.0.0.1:4312`。控制台会复用已有服务并启动缺少的组件，提供登录、任务准备、会话网址绑定和工具审批；完整步骤见根目录 [使用手册](../使用手册.md)。下文保留桥接安装、配置及 CLI 接入细节。
+
 ## 启用本机桥接
 
 先安装并启动已授权的 [arena-local-bridge](https://github.com/Gandhara2077/arena-local-bridge)。它要求 Chrome/Edge 和 Node.js 20+；Windows 也可以使用其 portable release。启动后在 `http://127.0.0.1:20140/` 完成网页登录，记下本机生成的 bridge key。不要把 Arena 密码、Cookie 或 key 提交到仓库。

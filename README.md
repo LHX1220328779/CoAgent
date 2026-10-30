@@ -17,14 +17,15 @@ cp .env.example .env
 
 编辑 `.env`，为 `COAGENT_API_KEY` 和 `OPENCODE_SERVER_PASSWORD` 设置不同的本地随机密钥。它们仅保护本机服务，**不是模型供应商 API key**。
 
-两个终端分别启动：
+启动本地网页控制台：
 
 ```bash
 npm start
-npm run coagent -- runtime
 ```
 
-默认 `mock` 模式仅演示协议，不能自主完成编程。实际 Arena 使用见 [Arena 接入](docs/arena.md)。Runtime 使用 `.coagent/runtime` 的独立配置和会话目录；不修改全局 OpenCode 配置。默认网关端口 4310、Runtime 4096；启动时根据 `COAGENT_PORT` 和当前模式自动生成匹配的网关地址及模型限制。
+默认打开 `http://127.0.0.1:4312`，自动启动缺少的组件并复用已有服务；重复启动连接已有控制台。首次启动会安装 Ubuntu 应用菜单入口 **CoAgent**；以后可从应用菜单打开，或双击/运行根目录 `启动CoAgent.sh`。页面支持项目选择、创建与准备任务、Arena 会话网址绑定、执行确认、单次工具审批、暂停/恢复/取消、报告和 diff。
+
+默认 `mock` 模式仅演示协议，不能自主完成编程。实际 Arena 使用见 [Arena 接入](docs/arena.md)。Runtime 使用 `.coagent/runtime` 的独立配置和会话目录。默认网关端口 4310、Runtime 4096；本机 `.env` 已将网关设为 4311。调试底层服务时可分别使用 `npm run coagent -- serve` 和 `npm run coagent -- runtime`。
 
 目标目录必须是已有提交的 Git 仓库，不能只包含未提交文件。新建 `task.json`：
 
@@ -53,7 +54,7 @@ npm run coagent -- show first-task
 
 其他命令：`list`、`metrics`、`pause <id>`、`resume <id>`、`cancel <id>`。Arena 模式可用 `bind <OpenCode session ID> <Arena UUID>` 绑定已有网页会话。`plan goal.json` 调用 Lead 生成最多四个待审批任务；Arena 模式先用 `plan-prepare goal.json` 创建并绑定 Lead Session，详见接入说明。恢复中断任务前检查工作目录；无法确认 Runtime 已停止时，任务保持暂停，复用会话前必须成功停止旧执行。
 
-高风险 OpenCode 工具需要 Runtime 自身批准。可通过 `node_modules/.bin/opencode attach http://127.0.0.1:4096` 连接，使用与 Runtime 一致的密码环境；具体客户端鉴权选项以该固定版本 `attach --help` 为准。Reviewer/Explorer 禁止 shell 和写入。
+高风险 OpenCode 工具需要 Runtime 自身批准，可在控制台查看命令并选择仅本次允许或拒绝；Reviewer/Explorer 禁止 shell 和写入。TUI 连接方法见根目录使用手册。
 
 ## LiteLLM 可选路径
 
