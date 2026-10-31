@@ -49,6 +49,17 @@ test('console reuses running services, shows expired login, and never starts a s
   }finally{if(consoleServer)await close(consoleServer);for(const server of servers)await close(server);await rm(root,{recursive:true,force:true});}
 });
 
+test('console refuses a bridge redirect without forwarding the login password',async()=>{
+  let forwarded=0,logins=0;const destination=createServer((_req,res)=>{forwarded++;res.end('{}');}),servers:Server[]=[destination];let consoleServer:Server|undefined;
+  try{
+    const target=await listen(destination);
+    const bridge=createServer((req,res)=>{if(req.url==='/api/accounts/login'){logins++;res.writeHead(307,{location:target+'/unapproved'});res.end();return;}res.setHeader('content-type','application/json');res.end(JSON.stringify({ready:true,accounts:[]}));});servers.push(bridge);
+    const bridgeURL=await listen(bridge),services=new LocalServices(process.cwd(),{COAGENT_MODE:'arena',COAGENT_API_KEY:'redirect-gateway',OPENCODE_SERVER_PASSWORD:'redirect-runtime',ARENA_BRIDGE_KEY:'redirect-bridge',ARENA_BRIDGE_URL:bridgeURL+'/v1'});
+    consoleServer=createConsole(services);const base=await listen(consoleServer),page=await fetch(base),cookie=page.headers.get('set-cookie')!.split(';')[0];await page.body?.cancel();
+    const response=await fetch(base+'/api/bridge/login',{method:'POST',headers:{cookie,'x-coagent-console':'1','content-type':'application/json'},body:JSON.stringify({email:'fixture@example.invalid',password:'private-login-password'})});
+    assert.ok(response.status>=400);assert.doesNotMatch(await response.text(),/private-login-password|unapproved/);assert.equal(logins,1);assert.equal(forwarded,0);
+  }finally{if(consoleServer)servers.push(consoleServer);await Promise.all(servers.map(close));}
+});
 test('startup restores an existing account with one history sync and no password login',async()=>{
   let restored=false,syncs=0,logins=0;
   const bridge=createServer((req,res)=>{if(req.url?.includes('login'))logins++;res.setHeader('content-type','application/json');res.end(JSON.stringify({ready:restored,accounts:[{email:'saved@example.invalid',disabled:false,cookieExpirySeconds:restored?3600:-60}]}));});

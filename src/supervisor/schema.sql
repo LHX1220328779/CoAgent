@@ -27,3 +27,7 @@ CREATE TABLE IF NOT EXISTS arena_leases (
  arena_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), role TEXT NOT NULL,
  runtime_id TEXT NOT NULL UNIQUE, reserved_at INTEGER NOT NULL, UNIQUE(task_id,role)
 );
+
+CREATE TABLE IF NOT EXISTS arena_successful_sessions (
+ arena_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), last_success_at INTEGER NOT NULL
+);

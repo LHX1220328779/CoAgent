@@ -22,7 +22,7 @@ export class McpTextBridge{
       emit(reply);
     };
     try{
-      const response=await this.request(this.endpoint,{method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':this.version,...(this.session?{'mcp-session-id':this.session}:{})},body:JSON.stringify(message),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(120000)])});
+      const response=await this.request(this.endpoint,{method:'POST',redirect:'error',headers:{'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':this.version,...(this.session?{'mcp-session-id':this.session}:{})},body:JSON.stringify(message),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(120000)])});
       this.session=response.headers.get('mcp-session-id')??this.session;
       if(!response.ok){await response.body?.cancel();throw new Error('MCP HTTP '+response.status);}
       if(response.status===202||response.status===204){await response.body?.cancel();if(message.id!==undefined)throw new Error('MCP response missing');return;}

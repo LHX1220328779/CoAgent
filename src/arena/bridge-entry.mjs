@@ -11,7 +11,7 @@ setGlobalProxyFromEnv();
 const network=browserNetwork(process.env);
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..'),source=join(root,'arena-local-bridge/src');
 const module=async name=>import(pathToFileURL(join(source,name)).href);
-const [{loadConfig},{CredentialStore},{ArenaBrowser,PAGE_PURPOSES},{Bridge},{RecaptchaBroker},{createServer},{cookieHeaderToObjects},{parseAgentOutput,parsePublicToken}]=await Promise.all(['config.mjs','credentials.mjs','arena-login.mjs','bridge.mjs','recaptcha.mjs','server.mjs','cookie.mjs','parser.mjs'].map(module));
+const [{loadConfig},{CredentialStore},{ArenaBrowser,PAGE_PURPOSES},{Bridge},{RecaptchaBroker},{createServer},{cookieHeaderToObjects},{parseAgentOutput}]=await Promise.all(['config.mjs','credentials.mjs','arena-login.mjs','bridge.mjs','recaptcha.mjs','server.mjs','cookie.mjs','parser.mjs'].map(module));
 const state=resolve(process.env.COAGENT_ARENA_DATA_DIR??join(root,'.coagent/arena-bridge'));
 await mkdir(state,{recursive:true,mode:0o700});
 // Explicit user preference: local test/account data remains plaintext, owner-only.
@@ -61,11 +61,11 @@ const bridge=new Bridge({config,credentials,recaptcha:null,startedAt:Date.now()}
 bridge.browser=new LoginBrowser({chromePath:config.chromePath,proxy:config.proxy});
 bridge.recaptcha=new RecaptchaBroker({browser:bridge.browser,siteKey:config.recaptchaSiteKey,ttlMs:config.recaptchaTtlMs});
 const renew=(account,cookieHeader)=>credentials.upsert({email:account.email,cookieHeader,password:'',priority:account.priority??1});
-const protocol=new ArenaProtocol({credentials,parse:parseAgentOutput,parseToken:parsePublicToken,complete:(model,text)=>bridge.makeCompletion(model,text,null,''),maxQueue:config.maxQueue,refresh:renew});
+const protocol=new ArenaProtocol({credentials,parse:parseAgentOutput,complete:(model,text)=>bridge.makeCompletion(model,text,null,''),maxQueue:config.maxQueue,refresh:renew});
 bridge.converse=protocol.converse.bind(protocol);
 bridge.runAgent=async()=>{throw Object.assign(new Error('协议模式需要先为任务分配现有会话'),{status:409});};
 const health=bridge.healthPayload.bind(bridge);
-bridge.healthPayload=()=>({...health(),transport:'http',protocolTurns:protocol.receipts.map(({sessionID,callerSession,state,inputSeq,errorType,domActions,startedAt,finishedAt})=>({sessionID,callerSession,state,inputSeq,errorType,domActions,startedAt,finishedAt})),network:{proxyConfigured:Boolean(network.proxy),proxySource:network.source},ready:credentials.list().some(a=>!a.disabled&&!(typeof a.cookieExpirySeconds==='number'&&a.cookieExpirySeconds<=0)&&bridge.readyAccounts.has(a.email.toLowerCase()))});
+bridge.healthPayload=()=>({...health(),transport:'http',protocolTurns:protocol.receipts.map(({sessionID,callerSession,state,inputSeq,errorType,domActions,startedAt,finishedAt,authorizationRequests,transportRequests,promptBytes,streamOpenedAt,firstRecordAt})=>({sessionID,callerSession,state,inputSeq,errorType,domActions,startedAt,finishedAt,authorizationRequests,transportRequests,promptBytes,streamOpenedAt,firstRecordAt})),network:{proxyConfigured:Boolean(network.proxy),proxySource:network.source},ready:credentials.list().some(a=>!a.disabled&&!(typeof a.cookieExpirySeconds==='number'&&a.cookieExpirySeconds<=0)&&bridge.readyAccounts.has(a.email.toLowerCase()))});
 const server=createServer({bridge,config}),original=server.listeners('request')[0];server.removeAllListeners('request');
 let catalog={accounts:[],sessions:[],syncedAt:null};
 try{catalog=JSON.parse(await readFile(join(state,'catalog.json'),'utf8'));}catch{}

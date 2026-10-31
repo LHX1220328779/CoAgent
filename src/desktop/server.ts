@@ -44,7 +44,7 @@ export function createConsole(services:LocalServices){
       if(req.method==='GET' && path==='/api/overview'){
         const states=await services.snapshot();let tasks:unknown[]=[];if(states.some(s=>s.name==='gateway'&&s.ready))tasks=await services.gateway('/tasks') as unknown[];
         const pool=services.env.COAGENT_MODE==='arena'&&states.some(s=>s.name==='gateway'&&s.ready)?await services.gateway('/arena/pool').catch(()=>null):null;
-        const login=states.some(s=>s.name==='bridge'&&s.running)?await fetch(services.urls.bridge+'/coagent/login/status',{headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`},signal:AbortSignal.timeout(1800)}).then(async r=>r.ok?await r.json():null).catch(()=>null) as any:null;
+        const login=states.some(s=>s.name==='bridge'&&s.running)?await fetch(services.urls.bridge+'/coagent/login/status',{redirect:'error',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`},signal:AbortSignal.timeout(1800)}).then(async r=>r.ok?await r.json():null).catch(()=>null) as any:null;
         json(res,200,{services:states,tasks,mode:services.env.COAGENT_MODE??'mock',pool,pendingLogin:login?.pending?.[0]??null});return;
       }
       if(req.method==='POST' && path==='/api/services/start'){json(res,200,{services:await services.start()});return;}
@@ -61,13 +61,13 @@ export function createConsole(services:LocalServices){
       if(req.method==='POST' && path==='/api/bridge/login'){
         const input=await readJSON(req) as any;
         if(typeof input?.email!=='string'||typeof input?.password!=='string'||!input.email.trim()||!input.password)throw new AppError('请填写邮箱和密码');
-        const response=await fetch(services.urls.bridge+'/api/accounts/login',{method:'POST',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`,'content-type':'application/json'},body:JSON.stringify({email:input.email,password:input.password}),signal:AbortSignal.timeout(120000)});
+        const response=await fetch(services.urls.bridge+'/api/accounts/login',{method:'POST',redirect:'error',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`,'content-type':'application/json'},body:JSON.stringify({email:input.email,password:input.password}),signal:AbortSignal.timeout(120000)});
         const result=await response.json().catch(()=>null) as any;if(!response.ok){const stage=({page:'打开 Arena 页面',credentials:'提交账号登录',session:'确认登录状态',network:'连接 Arena'} as Record<string,string>)[result?.error?.stage]??'桥接登录';throw new AppError(`${stage}未成功${result?.error?.upstreamStatus?'，Arena 返回 '+result.error.upstreamStatus:' ('+response.status+')'}。请检查浏览器网络代理，或在 Arena 网页正常完成登录。`,422);}
         const synced=await services.gateway('/arena/pool','POST',{}).catch(()=>null);json(res,200,{ok:true,synced:Boolean(synced)});return;
       }
       if(req.method==='POST'&&path==='/api/arena/sync'){json(res,200,await services.gateway('/arena/pool','POST',{}));return;}
       if(req.method==='POST'&&['/api/bridge/login/start','/api/bridge/login/complete'].includes(path)){
-        const input=await readJSON(req),route=path.endsWith('/start')?'start':'complete';const response=await fetch(services.urls.bridge+`/coagent/login/${route}`,{method:'POST',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`,'content-type':'application/json'},body:JSON.stringify(input),signal:AbortSignal.timeout(60000)});const result=await response.json() as any;
+        const input=await readJSON(req),route=path.endsWith('/start')?'start':'complete';const response=await fetch(services.urls.bridge+`/coagent/login/${route}`,{method:'POST',redirect:'error',headers:{authorization:`Bearer ${services.env.ARENA_BRIDGE_KEY}`,'content-type':'application/json'},body:JSON.stringify(input),signal:AbortSignal.timeout(60000)});const result=await response.json() as any;
         if(!response.ok)throw new AppError(result.error?.message??'网页登录窗口操作未成功',422);if(route==='complete')await services.gateway('/arena/pool','POST',{}).catch(()=>{});json(res,200,result);return;
       }
       if(req.method==='POST' && path==='/api/tasks'){

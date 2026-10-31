@@ -121,11 +121,27 @@ flowchart TD
 
 SSE 使用增量 TextDecoder，支持拆包 UTF-8、CRLF、多行 data、心跳；要求明确结束事件，断流不补造成功。工具片段按 index 聚合，完整 JSON Schema 验证后返回，禁止未知工具、重复 ID、孤立结果。失败流发送 error，省略 `[DONE]`，让客户端识别失败。
 
-并发信号量有有限队列；超时覆盖排队、连接、读取；取消释放槽位。Node fetch 复用其连接池。常规模式有限指数退避并尊重 Retry-After；仅在尚未输出内容时重试或 fallback；输出后不重放。熔断按 adapter/model 计数。Arena 模式串行、零重试、无 fallback，额度错误交还用户。2026-10-30 的真实 Runtime 测试确认 OpenCode 还会重试 HTTP 409，因此 Arena 模型入口将需人工处理的错误转为本地 422，避免 Runtime 再次访问网页上游；绑定控制面仍可使用 409 表示冲突。依据：[固定版重试策略](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/session/retry.ts)。
+并发信号量有有限队列；超时覆盖排队、连接、读取；取消释放槽位。Node fetch 复用其连接池。常规模式有限指数退避并尊重 Retry-After；仅在尚未输出内容时重试或 fallback；输出后不重放。熔断按 adapter/model 计数。Arena 模式同账号串行、不同账号有界并发，Supervisor 和网关共同使用 `COAGENT_CONCURRENCY`（默认 2，范围 1–8）；零重试、无 fallback，额度错误交还用户。2026-10-30 的真实 Runtime 测试确认 OpenCode 还会重试 HTTP 409，因此 Arena 模型入口将需人工处理的错误转为本地 422，避免 Runtime 再次访问网页上游；绑定控制面仍可使用 409 表示冲突。依据：[固定版重试策略](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/session/retry.ts)。
 
 上下文采用 UTF-8 字节保守上限，包含工具定义；不伪装精确 tokenizer，也不静默截断历史。上游 usage 是统计依据，缺失值保持未知。价格未知记 null，不能按 0 宣称免费。模型别名固定 lead/sidekick/reviewer；LiteLLM 供应商模型通过环境变量配置。
 
 仅绑定 loopback，Bearer key 保护控制面和模型面，OpenCode 使用独立 Basic Auth。日志默认不记录 Authorization、请求体或上游错误正文；任务内容及会话仍是本地敏感数据，需要用户自己的文件权限与备份策略。
+
+### 6.1 Arena 协议与上下文复用
+
+直接使用正常授权的 JSON 快照 `/api/chat/<uuid>` 与 `/api/chat/trigger-token`，随后 append 输入、读取 V2 SSE；不下载任务 HTML、不操作网页输入框。缓存以 Arena UUID + Native Session 区分，按返回 token 的过期时间提前刷新；旧元数据按 120 秒检查。完成后更新上一条用户消息的 UUIDv7，任何中断清除缓存，绝不自动重放。连续轮次通常由 4 次 HTTP 降为 2 次，独立计数授权与传输请求；首条 SSE record 可能是历史或控制帧，不能报告为首个模型 token。
+
+仅当 Native 历史是已确认历史的严格前缀、工具定义未变且绑定相同，才以 append 模式发送新增消息；否则发送 full 规范上下文。每轮保留完整工具 Schema 与新 request_id，末尾重复当前响应契约。缓存只在完整消费并通过协议校验后提交，异常、取消、提前关闭或改绑清除。解析器只接受一个含当前标识的完整工具或最终帧，忽略包围说明，但不执行无帧文本；JSON 字符串内的标记不作为额外帧。真实测试发现 Reviewer 复用旧标识时严格拒绝，保留审查检查点，通过显式恢复继续，未放宽校验。
+
+会话质量记录只来自已 succeeded 且显式归还的任务，保存在 `arena_successful_sessions`。空闲、可用的成功会话优先，同一经验等级尽量分散账号；失败不触发换账号、抢占或自动重发，也不按标题猜测能力。原始标题和独占租约仍是会话池的真实元数据。
+
+### 6.2 传输与外联边界
+
+任务路径的 Arena HTTPS 接口、桥接请求、Runtime fetch 和可选 MCP 文本桥接统一使用 `redirect: error`；控制台登录、ACP 与 CLI 的本机控制面请求同样拒绝重定向。Arena 只转发该服务的账号 Cookie，不把其 Cookie 或会话 token 传给 MCP。MCP 仅连接用户配置的端点，远程地址要求 HTTPS，回环开发地址允许 HTTP。标准 remote MCP 仍由固定 OpenCode 的 SDK 处理，不能把文本桥接的保护宣称为所有传输都已拦截。
+
+受管理 Runtime 禁用更新、默认插件、模型目录网络拉取、LSP 自动下载及项目 OpenCode 配置自动加载，并保持关闭分享。开关已在本机锁定的 1.19.5 二进制中核对；不使用臆造的遥测开关。性能诊断默认关闭，启用时只写统计元数据，不复制模型正文；正常本地任务历史仍保留开发证据。参考 [OpenCode 官方环境变量](https://opencode.ai/docs/cli/#environment-variables) 与 [MCP 安全建议](https://modelcontextprotocol.io/docs/2025-11-25/tutorials/security/security_best_practices)，没有引入第三方指纹、验证绕过或中转平台。
+
+这些应用层措施减少误发及不必要外联，不能替代系统网络隔离，也不能保证“不被追踪”或不触发上游风控。Arena、模型、指定 MCP、隧道及用户代理仍处于真实数据路径；用户批准的开发命令也可能连接依赖仓库。正常授权、明确端点、最小必要上下文与执行审批共同约束该路径。
 
 ## 7. 多 Agent 调度与持久上下文
 

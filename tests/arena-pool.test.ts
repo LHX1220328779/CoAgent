@@ -20,7 +20,10 @@ test('task reservations are exclusive, atomic, persistent, preserve titles and r
   await pool.refresh();const assigned=await Promise.allSettled([pool.assign('a'),pool.assign('b')]);assert.equal(assigned[0].status,'fulfilled');assert.equal(assigned[1].status,'rejected');assert.equal(pool.assignments('a').length,2);assert.equal(pool.assignments('b').length,0);
   assert.equal((pool.snapshot().sessions[0] as any).title,title+'1');store.update('a',{status:'succeeded'});await assert.rejects(pool.assign('b'),{code:'arena_sessions_unavailable'});
   visible=false;await pool.refresh();assert.doesNotThrow(()=>pool.ready('a'),'a partial history must not invalidate an existing reservation');visible=true;await pool.refresh();
-  await pool.release('a');await pool.assign('b');const bindings=JSON.parse(await readFile(bindingFile,'utf8'));assert.equal(bindings[a.worker.runtimeID],undefined);assert.ok(bindings[b.worker.runtimeID]);assert.equal(pool.assignments('a').length,0);
+  await pool.release('a');assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM arena_successful_sessions').get()!.n,2);
+  // A newly discovered but untested session must not displace a successful one.
+  store.db.prepare('INSERT INTO arena_catalog VALUES(?,?,?,?,?)').run('00000000-0000-0000-0000-000000000000','owner3@example.invalid','未测试会话',1,Date.now()+1000);
+  await pool.assign('b');assert.ok(pool.assignments('b').every((s:any)=>s.arena_id!=='00000000-0000-0000-0000-000000000000'));const bindings=JSON.parse(await readFile(bindingFile,'utf8'));assert.equal(bindings[a.worker.runtimeID],undefined);assert.ok(bindings[b.worker.runtimeID]);assert.equal(pool.assignments('a').length,0);
   title='原网页更新的标题 ';await pool.refresh();assert.equal((pool.assignments('b')[0] as any).title,title+'2');
   store.update('b',{status:'running'});await assert.rejects(pool.release('b'),{status:409});store.update('b',{status:'paused'});
   await orch.close();store.close();closed=true;const reopened=new Store(path);try{assert.equal(reopened.db.prepare('SELECT COUNT(*) AS n FROM arena_leases').get()!.n,2);assert.equal(reopened.db.prepare('SELECT COUNT(*) AS n FROM task_agent_sessions').get()!.n,4);}finally{reopened.close();}

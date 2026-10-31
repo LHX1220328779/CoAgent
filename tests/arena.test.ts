@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ArenaAgentAdapter } from '../src/gateway/adapters.ts';
@@ -26,24 +26,30 @@ test('Arena session binding, opt-in simulated tools, quota propagation and no sh
 test('UUID text bridge receives full local tool context and returns validated calls and tool results',async()=>{
  const root=await mkdtemp(join(tmpdir(),'coagent-arena-text-'));const bindings=join(root,'bindings.json');
  const target='00000000-0000-0000-0000-000000000011';await writeFile(bindings,JSON.stringify({ses_text:target}));
- const requests:any[]=[];let reply:string|((request:any)=>string)='<coagent_tool_call>{"name":"echo","arguments":{"text":"local result"}}</coagent_tool_call>';
+ const requests:any[]=[];const nonce=(wire:any)=>wire.messages[0].content.match(/"request_id":"([^"]+)"/)[1];let reply:string|((request:any)=>string)=wire=>'<coagent_tool_call>'+JSON.stringify({request_id:nonce(wire),name:'echo',arguments:{text:'local result'}})+'</coagent_tool_call>';
  const server=createServer(async(req,res)=>{let raw='';for await(const chunk of req)raw+=chunk;const request=JSON.parse(raw);requests.push(request);const content=typeof reply==='function'?reply(request):reply;res.writeHead(200,{'content-type':'text/event-stream'});res.end(`data: ${JSON.stringify({choices:[{index:0,delta:{content},finish_reason:'stop'}]})}\n\ndata: [DONE]\n\n`);});
  server.listen(0,'127.0.0.1');await once(server,'listening');
- const arena=new ArenaAgentAdapter(`http://127.0.0.1:${(server.address() as {port:number}).port}/v1`,'fixture',bindings);
+ const diagnostics=join(root,'diagnostics'),arena=new ArenaAgentAdapter(`http://127.0.0.1:${(server.address() as {port:number}).port}/v1`,'fixture',bindings,diagnostics);
  const router=new ModelRouter({retries:0,allowSimulatedTools:true}).register('sidekick',{adapter:arena,model:'sidekick'});
  const request:ModelRequest={model:'sidekick',_coagentSession:'ses_text',messages:[{role:'system',content:'Use local tools'},{role:'user',content:'Read the local file'}],tools:[{type:'function',function:{name:'echo',parameters:{type:'object',properties:{text:{type:'string'}},required:['text']}}}]};
  try{
   const first=await Array.fromAsync(router.generate(request,AbortSignal.timeout(2000)));const call=first.find(e=>e.type==='tool');assert.ok(call?.type==='tool');assert.equal(call.name,'echo');assert.deepEqual(JSON.parse(call.arguments!),{text:'local result'});assert.ok(first.some(e=>e.type==='finish' && e.reason==='tool_calls'));
-  const wire=requests[0];assert.equal(wire.messages.length,1);assert.equal(wire.messages[0].role,'user');assert.match(wire.messages[0].content,/Use local tools/);assert.match(wire.messages[0].content,/"required":\["text"\]/);
-  reply='completed';const messages=[...request.messages,{role:'assistant' as const,content:null,tool_calls:[{id:call.id!,type:'function' as const,function:{name:call.name!,arguments:call.arguments!}}]},{role:'tool' as const,tool_call_id:call.id!,content:'authoritative local result'}];
-  const second=await Array.fromAsync(router.generate({...request,messages},AbortSignal.timeout(2000)));assert.ok(second.some(e=>e.type==='text' && e.text==='completed'));assert.match(requests[1].messages[0].content,/authoritative local result/);assert.match(requests[1].messages[0].content,/tool_call_id/);
-  reply='<coagent_tool_call>{"name":"echo","arguments":{"text":false}}</coagent_tool_call>';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{status:422,code:'protocol_error'});
+  const wire=requests[0];assert.equal(wire.messages.length,1);assert.equal(wire.messages[0].role,'user');assert.match(wire.messages[0].content,/Use local tools/);assert.match(wire.messages[0].content,/"required":\["text"\]/);const contract=JSON.parse(wire.messages[0].content.split('OpenCode request JSON:\n')[1]).response_contract;assert.equal(contract.request_id,nonce(wire));
+  reply=wire=>'<coagent_final>'+JSON.stringify({request_id:nonce(wire),content:'completed'})+'</coagent_final>';const messages=[...request.messages,{role:'assistant' as const,content:null,tool_calls:[{id:call.id!,type:'function' as const,function:{name:call.name!,arguments:call.arguments!}}]},{role:'tool' as const,tool_call_id:call.id!,content:'authoritative local result'}];
+  const second=await Array.fromAsync(router.generate({...request,messages},AbortSignal.timeout(2000)));assert.ok(second.some(e=>e.type==='text' && e.text==='completed'));assert.match(requests[1].messages[0].content,/authoritative local result/);assert.match(requests[1].messages[0].content,/tool_call_id/);assert.doesNotMatch(requests[1].messages[0].content,/Use local tools/);const incremental=JSON.parse(requests[1].messages[0].content.split('OpenCode request JSON:\n')[1]);assert.equal(incremental.context.kind,'append');assert.equal(incremental.messages.length,2);
+  const records=await Promise.all((await readdir(diagnostics)).map(async name=>JSON.parse(await readFile(join(diagnostics,name),'utf8'))));assert.equal(records.length,2);const incrementalRecord=records.find(record=>record.contextMode==='append');assert.ok(incrementalRecord.promptBytes<incrementalRecord.fullPromptBytes);assert.doesNotMatch(JSON.stringify(records),/authoritative local result|FINAL_ANSWER|\"text\":|\"messages\":/);
+  reply=wire=>'<coagent_tool_call>'+JSON.stringify({request_id:nonce(wire),name:'echo',arguments:{text:false}})+'</coagent_tool_call>';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{status:422,code:'protocol_error'});
   reply='example: <coagent_tool_call>{"name":"echo","arguments":{}}</coagent_tool_call>';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{code:'arena_tool_protocol_error'});
   reply=wire=>{const requestID=wire.messages[0].content.match(/"request_id":"([^"]+)"/)[1];return 'Reading the file.\n<coagent_tool_call>'+JSON.stringify({request_id:requestID,name:'echo',arguments:{text:'nonce verified'}})+'</coagent_tool_call>';};
   const withExplanation=await Array.fromAsync(router.generate(request,AbortSignal.timeout(2000)));assert.ok(withExplanation.some(e=>e.type==='tool'));assert.ok(!withExplanation.some(e=>e.type==='text'));
   reply='<coagent_tool_call>{"request_id":"stale","name":"echo","arguments":{"text":"wrong turn"}}</coagent_tool_call>';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{code:'arena_tool_protocol_error'});
   reply=wire=>{const requestID=wire.messages[0].content.match(/"request_id":"([^"]+)"/)[1];return 'Independent review completed.\n<coagent_final>'+JSON.stringify({request_id:requestID,content:{approved:true,findings:[]}})+'</coagent_final>';};
   const review=await Array.fromAsync(router.generate(request,AbortSignal.timeout(2000)));const verdict=review.find(e=>e.type==='text');assert.ok(verdict?.type==='text');assert.deepEqual(JSON.parse(verdict.text),{approved:true,findings:[]});
+  reply='I cannot operate that machine';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{code:'arena_tool_protocol_unsupported'});
+  reply=wire=>'```xml\n<coagent_tool_call>'+JSON.stringify({request_id:nonce(wire),name:'echo',arguments:{text:'contains </coagent_tool_call> and <coagent_final> as file data'}})+'</coagent_tool_call>\n```\nWaiting for the actual tool result.';
+  const fenced=await Array.fromAsync(router.generate(request,AbortSignal.timeout(2000)));assert.ok(fenced.some(e=>e.type==='tool'&&e.arguments?.includes('file data')));
+  reply=wire=>'<coagent_tool_call>'+JSON.stringify({request_id:nonce(wire),name:'echo',arguments:{text:'one'}})+'</coagent_tool_call><coagent_final>'+JSON.stringify({request_id:nonce(wire),content:'two'})+'</coagent_final>';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{code:'arena_tool_protocol_error'});
+  reply='<coagent_tool_call>{"name":"echo","arguments":{"text":"missing nonce"}}</coagent_tool_call>';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{code:'arena_tool_protocol_error'});
   reply='<coagent_final>{"request_id":"stale","content":{"approved":true,"findings":[]}}</coagent_final>';await assert.rejects(Array.fromAsync(router.generate(request,AbortSignal.timeout(2000))),{code:'arena_tool_protocol_error'});
  }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));await rm(root,{recursive:true,force:true});}
 });

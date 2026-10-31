@@ -20,7 +20,7 @@ export class OpenAIAdapter implements ModelAdapter {
   }
   async *generate(request: ModelRequest, signal: AbortSignal): AsyncGenerator<ModelEvent> {
     const { _coagentSession, ...wireRequest } = request;
-    const response = await fetch(`${this.baseURL}/chat/completions`, { method: 'POST', signal,
+    const response = await fetch(`${this.baseURL}/chat/completions`, { method: 'POST', redirect: 'error', signal,
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}`, ...(typeof _coagentSession === 'string' ? {'x-codex-session-id':_coagentSession} : {}) },
       body: JSON.stringify({ ...wireRequest, stream: true, stream_options: { include_usage: true } }) });
     if (!response.ok) {
@@ -59,6 +59,7 @@ export class ArenaResearchAdapter extends OpenAIAdapter {
 export class ArenaAgentAdapter extends OpenAIAdapter {
   bindingsPath: string;
   diagnosticsDir?: string;
+  private contexts=new Map<string,{target:string;messages:string[];tools:string}>();
   private bindingWrite: Promise<void> = Promise.resolve();
   constructor(baseURL: string, key: string, bindingsPath: string, diagnosticsDir?:string, contextBudget=arenaCapabilities.contextWindow) {
     const url = new URL(baseURL);
@@ -92,7 +93,7 @@ export class ArenaAgentAdapter extends OpenAIAdapter {
       const temporary=`${this.bindingsPath}.${randomUUID()}.tmp`;
       try {
         await writeFile(temporary,JSON.stringify(bindings,null,2)+'\n',{mode:0o600,flag:'wx'});
-        await rename(temporary,this.bindingsPath);
+        await rename(temporary,this.bindingsPath);for(const id of [...remove,...pairs.map(pair=>pair.sessionID)])this.contexts.delete(id);
       }finally{await rm(temporary,{force:true});}
     });
     this.bindingWrite=write.catch(()=>{});
@@ -106,9 +107,12 @@ export class ArenaAgentAdapter extends OpenAIAdapter {
     const target=bindings[session];
     if(typeof target!=='string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target))throw new AppError('Bind this OpenCode session to an existing Arena Agent session UUID',422,'arena_session_required');
     if(Object.values(bindings).filter(id=>typeof id==='string' && id.toLowerCase()===target.toLowerCase()).length!==1)throw new AppError('Each agent requires a distinct Arena session',422,'arena_session_conflict');
+    let delivered=false;
     try {
       const requestID=randomUUID();
-      const prompt=arenaToolPrompt(request,requestID);
+      const messages=request.messages.map(message=>JSON.stringify(message)),tools=JSON.stringify({tools:request.tools??[],choice:request.tool_choice}),previous=this.contexts.get(session);
+      const append=Boolean(previous&&previous.target===target&&previous.tools===tools&&previous.messages.length<messages.length&&previous.messages.every((message,index)=>messages[index]===message));
+      const prompt=arenaToolPrompt({...request,messages:append?request.messages.slice(previous!.messages.length):request.messages},requestID,{kind:append?'append':'full',session_id:session});
       if(Buffer.byteLength(prompt)+(request.max_tokens ?? this.capabilities.maxOutput)>this.capabilities.contextWindow)throw new AppError('Arena serialized context exceeds the configured budget',422,'arena_context_length');
       const events:ModelEvent[]=[];let text='';let finish:Extract<ModelEvent,{type:'finish'}>|undefined;let structured=false;
       for await(const event of super.generate({...request,model:target,messages:[{role:'user',content:prompt}]},signal)){
@@ -120,10 +124,11 @@ export class ArenaAgentAdapter extends OpenAIAdapter {
       }
       if(this.diagnosticsDir){
         await mkdir(this.diagnosticsDir,{recursive:true,mode:0o700});
-        await writeFile(`${this.diagnosticsDir}/${Date.now()}-${randomUUID()}.json`,JSON.stringify({sessionID:session,requestID,tools:request.tools?.map(tool=>tool.function.name) ?? [],promptBytes:Buffer.byteLength(prompt),finish,text},null,2)+'\n',{mode:0o600,flag:'wx'});
+        await writeFile(`${this.diagnosticsDir}/${Date.now()}-${randomUUID()}.json`,JSON.stringify({sessionID:session,requestID,tools:request.tools?.map(tool=>tool.function.name) ?? [],promptBytes:Buffer.byteLength(prompt),fullPromptBytes:Buffer.byteLength(arenaToolPrompt(request,requestID,{kind:'full',session_id:session})),contextMode:append?'append':'full',sentMessages:append?request.messages.length-previous!.messages.length:request.messages.length,finish},null,2)+'\n',{mode:0o600,flag:'wx'});
       }
       const finalText=structured?undefined:arenaFinalAnswer(text,requestID);
       const calls=structured || finalText!==undefined ? [] : arenaTextTools(text,requestID);
+      if(!structured&&finalText===undefined&&!calls.length&&request.tools?.length)throw new AppError('Arena did not return a current-turn tool or final frame; no local action was requested',422,'arena_tool_protocol_unsupported');
       if(calls.length){
         if(!request.tools?.length || request.tool_choice==='none' || finish?.reason==='length')throw new AppError('Unexpected or incomplete Arena tool request',422,'arena_tool_protocol_error');
         for(const [index,call] of calls.entries())yield {type:'tool',index,id:call.id,name:call.function.name,arguments:call.function.arguments};
@@ -134,8 +139,9 @@ export class ArenaAgentAdapter extends OpenAIAdapter {
         for(const event of events)yield event;
         if(finish)yield finish;
       }
+      this.contexts.set(session,{target,messages,tools});delivered=true;
     } catch (cause) {
-      signal.throwIfAborted();
+      this.contexts.delete(session);signal.throwIfAborted();
       // OpenCode V1 itself retries 429/5xx even when this gateway has retries=0.
       // 409 is also retryable in the SDK, so 422 denotes a terminal local precondition.
       const status = cause instanceof AppError ? cause.status : undefined;
@@ -143,7 +149,7 @@ export class ArenaAgentAdapter extends OpenAIAdapter {
       const error = new AppError(cause instanceof AppError && cause.code.startsWith('arena_') ? cause.message : 'Arena Agent needs attention; inspect the existing session before resuming',422,code);
       error.cause = cause;
       throw error;
-    }
+    }finally{if(!delivered)this.contexts.delete(session);}
   }
 }
 export class MockAdapter implements ModelAdapter {

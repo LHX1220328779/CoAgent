@@ -9,6 +9,7 @@ import { RuntimeExecutionError } from '../src/errors.ts';
 import { OpenCodeRuntime } from '../src/runtime/opencode.ts';
 import { runtimeConfig } from '../src/runtime/config.ts';
 import { arenaCapabilities } from '../src/gateway/adapters.ts';
+import {runtimeEnvironment} from '../src/runtime/environment.ts';
 
 async function fixture(handler:RequestListener){
   const server=createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');
@@ -36,6 +37,14 @@ test('runtime config aligns Arena model limits and gateway port without altering
     assert.equal(mcp.agent.sidekick.permission['local_workspace_*'],'ask');assert.equal(mcp.agent.reviewer.permission['local_workspace_*'],'deny');assert.equal(mcp.agent.reviewer.permission.local_workspace_read_files,'allow');
     const text=JSON.parse(await readFile(await runtimeConfig(template,root,{COAGENT_MCP_URL:'https://mcp.example.invalid/test',COAGENT_MCP_TEXT_ONLY:'1'}),'utf8'));
     assert.equal(text.mcp.local_workspace.type,'local');assert.equal(text.mcp.local_workspace.command[0],process.execPath);assert.match(text.mcp.local_workspace.command[1],/mcp-text-bridge\.ts$/);assert.doesNotMatch(JSON.stringify(text),/mcp\.example\.invalid/);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+test('managed runtime disables unsolicited registry, updater, project config and LSP downloads',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'coagent-environment-'));
+  try{
+    const env=await runtimeEnvironment(root,resolve('config/opencode.json'),{NO_PROXY:'mcp.example.invalid',OPENCODE_DISABLE_MODELS_FETCH:'false'});
+    for(const key of ['OPENCODE_DISABLE_MODELS_FETCH','OPENCODE_DISABLE_AUTOUPDATE','OPENCODE_DISABLE_DEFAULT_PLUGINS','OPENCODE_DISABLE_LSP_DOWNLOAD','OPENCODE_DISABLE_PROJECT_CONFIG'])assert.equal(env[key],'true');
+    assert.match(env.NO_PROXY!,/mcp\.example\.invalid/);assert.match(env.NO_PROXY!,/127\.0\.0\.1/);assert.equal(env.OPENCODE_CONFIG,resolve('config/opencode.json'));
   }finally{await rm(root,{recursive:true,force:true});}
 });
 

@@ -8,7 +8,7 @@ export class OpenCodeRuntime implements AgentRuntime {
   url: string; password: string;
   constructor(url: string, password: string) { this.url = url.replace(/\/$/,''); this.password = password; }
   async request(path: string, directory: string, method = 'GET', body?: unknown, signal?: AbortSignal) {
-    const url = this.url+path+'?directory='+encodeURIComponent(directory),options={ method,
+    const url = this.url+path+'?directory='+encodeURIComponent(directory),options={ method,redirect:'error' as const,
       headers: { 'content-type':'application/json', authorization:'Basic '+Buffer.from('opencode:'+this.password).toString('base64') },
       body: body === undefined ? undefined : JSON.stringify(body), signal: signal ?? AbortSignal.timeout(15000) };
     // A prompt includes all tool rounds and approvals. fetch's independent 300s

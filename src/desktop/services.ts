@@ -23,7 +23,7 @@ export class LocalServices {
     }
   }
   async gateway(path:string,method='GET',body?:unknown) {
-    const response=await fetch(this.urls.gateway+path,{method,headers:{authorization:`Bearer ${this.env.COAGENT_API_KEY}`,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(path==='/arena/pool'&&method==='POST'?180000:30000)});
+    const response=await fetch(this.urls.gateway+path,{method,redirect:'error',headers:{authorization:`Bearer ${this.env.COAGENT_API_KEY}`,'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(path==='/arena/pool'&&method==='POST'?180000:30000)});
     if(!response.ok){const data=await response.json().catch(()=>null) as any;throw new AppError(data?.error?.message ?? `CoAgent 请求失败 (${response.status})`,response.status,'console_upstream');}
     return response.json();
   }
@@ -32,7 +32,7 @@ export class LocalServices {
     try{
       const headers:Record<string,string>=name==='runtime'?{authorization:`Basic ${Buffer.from(`opencode:${this.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}`}:name==='gateway'?{authorization:`Bearer ${this.env.COAGENT_API_KEY}`}:{ };
       const path=name==='runtime'?'/global/health':name==='gateway'?'/tasks':'/health';
-      const response=await fetch(this.urls[name]+path,{headers,signal:AbortSignal.timeout(1800)});
+      const response=await fetch(this.urls[name]+path,{redirect:'error',headers,signal:AbortSignal.timeout(1800)});
       if(!response.ok)return {...base,running:true,message:response.status===401?'鉴权配置不匹配，请检查本机 .env':`端口已占用，服务返回 ${response.status}；未启动重复进程`};
       const data=await response.json() as any;
       if(name==='gateway')return Array.isArray(data)?{...base,running:true,ready:true,message:'已连接'}:{...base,running:true,message:'端口被其他服务占用'};

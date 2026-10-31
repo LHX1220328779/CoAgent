@@ -8,5 +8,5 @@ export async function runtimeEnvironment(stateDirectory:string, config:string, b
   await copyFile(join(root,'package.json'),join(packageDir,'package.json'));await copyFile(join(root,'package-lock.json'),join(packageDir,'package-lock.json'));
   try{await symlink(join(root,'node_modules'),join(packageDir,'node_modules'),'junction');}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
   const noProxy=[base.NO_PROXY ?? base.no_proxy ?? '', '127.0.0.1','localhost','::1'].filter(Boolean).join(',');
-  return {...base,OPENCODE_CONFIG:resolve(config),OPENCODE_DISABLE_DEFAULT_PLUGINS:'true',OPENCODE_DISABLE_AUTOUPDATE:'true',XDG_CONFIG_HOME:configHome,XDG_DATA_HOME:join(state,'data'),XDG_CACHE_HOME:join(state,'cache'),XDG_STATE_HOME:join(state,'state'),NO_PROXY:noProxy,no_proxy:noProxy};
+  return {...base,OPENCODE_CONFIG:resolve(config),OPENCODE_DISABLE_DEFAULT_PLUGINS:'true',OPENCODE_DISABLE_AUTOUPDATE:'true',OPENCODE_DISABLE_MODELS_FETCH:'true',OPENCODE_DISABLE_LSP_DOWNLOAD:'true',OPENCODE_DISABLE_PROJECT_CONFIG:'true',XDG_CONFIG_HOME:configHome,XDG_DATA_HOME:join(state,'data'),XDG_CACHE_HOME:join(state,'cache'),XDG_STATE_HOME:join(state,'state'),NO_PROXY:noProxy,no_proxy:noProxy};
 }

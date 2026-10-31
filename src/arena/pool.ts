@@ -10,7 +10,7 @@ export class ArenaPool{
   private store:Store;private adapter:ArenaAgentAdapter;
   constructor(store:Store,adapter:ArenaAgentAdapter){this.store=store;this.adapter=adapter;}
   async refresh(){
-    const response=await fetch(this.adapter.baseURL.replace(/\/v1\/?$/,'')+'/coagent/sessions',{method:'POST',headers:{authorization:`Bearer ${this.adapter.apiKey}`,'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(180000)});
+    const response=await fetch(this.adapter.baseURL.replace(/\/v1\/?$/,'')+'/coagent/sessions',{method:'POST',redirect:'error',headers:{authorization:`Bearer ${this.adapter.apiKey}`,'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(180000)});
     if(!response.ok){await response.body?.cancel();throw new AppError(response.status===404?'请通过 CoAgent 重新启动支持会话同步的桥接':'会话同步失败，请检查账号登录和桥接状态',422);}
     const data=await response.json() as {sessions:CatalogSession[];accounts:unknown[];syncedAt:number};
     if(!Array.isArray(data.sessions))throw new AppError('桥接返回的会话清单格式无效',422);
@@ -22,7 +22,7 @@ export class ArenaPool{
     this.store.transaction(()=>{for(const [runtimeID,uuid] of Object.entries(bindings)){const session=this.store.db.prepare('SELECT task_id,role FROM task_agent_sessions WHERE runtime_id=?').get(runtimeID) as any;if(session)this.store.db.prepare('INSERT OR IGNORE INTO arena_leases VALUES(?,?,?,?,?)').run(uuid,session.task_id,session.role,runtimeID,Date.now());}});
     return {...this.snapshot(),accounts:data.accounts};
   }
-  snapshot(){return {sessions:this.store.db.prepare('SELECT c.*,l.task_id,l.role,t.title AS task_title FROM arena_catalog c LEFT JOIN arena_leases l ON l.arena_id=c.id LEFT JOIN tasks t ON t.id=l.task_id ORDER BY c.account_email,c.title,c.id').all(),leases:this.store.db.prepare('SELECT * FROM arena_leases ORDER BY reserved_at').all()};}
+  snapshot(){return {sessions:this.store.db.prepare('SELECT c.*,l.task_id,l.role,t.title AS task_title,h.last_success_at FROM arena_catalog c LEFT JOIN arena_leases l ON l.arena_id=c.id LEFT JOIN tasks t ON t.id=l.task_id LEFT JOIN arena_successful_sessions h ON h.arena_id=c.id ORDER BY c.account_email,c.title,c.id').all(),leases:this.store.db.prepare('SELECT * FROM arena_leases ORDER BY reserved_at').all()};}
   private serial<T>(fn:()=>Promise<T>){const result=this.queue.then(fn);this.queue=result.catch(()=>{});return result;}
   private stopped(task:Task){if(['running','reviewing','queued'].includes(task.status))throw new AppError('请先暂停任务再调整会话',409);const busy=this.store.db.prepare("SELECT id FROM task_agent_sessions WHERE task_id=? AND state='running'").get(task.id);if(busy)throw new AppError('Agent 停止尚未确认，请先准备或恢复检查该任务',409);}
   assignments(id:string){return this.store.db.prepare('SELECT l.*,c.title,c.account_email FROM arena_leases l LEFT JOIN arena_catalog c ON c.id=l.arena_id WHERE l.task_id=? ORDER BY l.role').all(id);}
@@ -37,8 +37,8 @@ export class ArenaPool{
       for(const session of native){
         const existing=this.store.db.prepare('SELECT * FROM arena_leases WHERE task_id=? AND role=?').get(id,session!.role) as any;
         if(existing){assigned.push({sessionID:session!.runtimeID,arenaSessionID:existing.arena_id});continue;}
-        const free=this.store.db.prepare('SELECT c.* FROM arena_catalog c WHERE available=1 AND NOT EXISTS (SELECT 1 FROM arena_leases l WHERE l.arena_id=c.id) ORDER BY updated_at DESC,id').all() as any[];
-        const candidates=free.filter(s=>!external.has(s.id));const chosen=candidates.find(s=>!usedAccounts.has(s.account_email))??candidates[0];
+        const free=this.store.db.prepare('SELECT c.*,h.last_success_at FROM arena_catalog c LEFT JOIN arena_successful_sessions h ON h.arena_id=c.id WHERE available=1 AND NOT EXISTS (SELECT 1 FROM arena_leases l WHERE l.arena_id=c.id) ORDER BY h.last_success_at DESC,c.updated_at DESC,c.id').all() as any[];
+        const candidates=free.filter(s=>!external.has(s.id)),experienced=candidates.filter(s=>s.last_success_at!==null),preferred=experienced.length?experienced:candidates;const chosen=preferred.find(s=>!usedAccounts.has(s.account_email))??preferred[0];
         if(!chosen)throw new AppError('可用的未占用会话不足，需要两条。请登录并同步会话，或先解绑旧任务的会话',409,'arena_sessions_unavailable');
         this.store.db.prepare('INSERT INTO arena_leases VALUES(?,?,?,?,?)').run(chosen.id,id,session!.role,session!.runtimeID,Date.now());usedAccounts.add(chosen.account_email);assigned.push({sessionID:session!.runtimeID,arenaSessionID:chosen.id});
       }return assigned;
@@ -46,5 +46,5 @@ export class ArenaPool{
     // A crash here retains reservations; explicit retry repairs the mapping without reallocating.
     await this.adapter.bindMany(pairs);this.store.audit('arena_assign',id,{roles:pairs.length});return this.assignments(id);
   });}
-  release(id:string){return this.serial(async()=>{const task=this.store.task(id);this.stopped(task);const leases=this.assignments(id) as any[];await this.adapter.bindMany([],leases.map(l=>l.runtime_id));this.store.db.prepare('DELETE FROM arena_leases WHERE task_id=?').run(id);this.store.audit('arena_release',id);return {released:leases.length};});}
+  release(id:string){return this.serial(async()=>{const task=this.store.task(id);this.stopped(task);const leases=this.assignments(id) as any[];await this.adapter.bindMany([],leases.map(l=>l.runtime_id));this.store.transaction(()=>{if(task.status==='succeeded')for(const lease of leases)this.store.db.prepare('INSERT INTO arena_successful_sessions VALUES(?,?,?) ON CONFLICT(arena_id) DO UPDATE SET task_id=excluded.task_id,last_success_at=excluded.last_success_at').run(lease.arena_id,id,Date.now());this.store.db.prepare('DELETE FROM arena_leases WHERE task_id=?').run(id);});this.store.audit('arena_release',id);return {released:leases.length};});}
 }

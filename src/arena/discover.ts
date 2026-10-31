@@ -5,7 +5,7 @@ export async function discoverSessions(credential:Credential,refresh:(cookieHead
   const found=new Map<string,{id:string;title:string;url:string}>(),visited=new Set<string>();let cursor:string|null=null;
   for(;;){
     const url=new URL('https://arena.ai/api/history/unified');url.searchParams.set('type','agentic');url.searchParams.set('limit','20');url.searchParams.set('includeArchived','false');if(cursor)url.searchParams.set('cursor',cursor);
-    const response=await fetch(url,{headers:{...accountHeaders(credential.cookieHeader),accept:'application/json'},signal:AbortSignal.timeout(45000)});
+    const response=await fetch(url,{redirect:'error',headers:{...accountHeaders(credential.cookieHeader),accept:'application/json'},signal:AbortSignal.timeout(45000)});
     if(!response.ok){await response.body?.cancel();throw Object.assign(new Error('Arena 历史协议读取失败'),{status:response.status});}
     const cookies=refreshedAccountCookies(credential.cookieHeader,response);if(cookies!==credential.cookieHeader){refresh(cookies);credential={...credential,cookieHeader:cookies};}
     const data=await response.json() as {entries?:{type:string;id:string;title:string|null;archivedAt?:string|null}[];pagination?:{hasMore:boolean;cursor:string|null};partial?:boolean};

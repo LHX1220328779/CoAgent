@@ -24,8 +24,9 @@ async function main(){
     const mode=process.env.COAGENT_MODE ?? 'mock';if(!['mock','litellm','arena'].includes(mode))throw new Error('COAGENT_MODE must be mock, litellm or arena');
     const store=new Store(process.env.COAGENT_DB ?? '.coagent/state.db');
     const runtime=new OpenCodeRuntime(process.env.OPENCODE_URL ?? 'http://127.0.0.1:4096',process.env.OPENCODE_SERVER_PASSWORD ?? '');
-    const orchestrator=new Orchestrator(store,runtime,new GitWorktrees(process.env.COAGENT_WORKTREE_ROOT??'.coagent/worktrees'),mode==='arena'?1:Number(process.env.COAGENT_CONCURRENCY ?? 2));
-    const router=new ModelRouter({record:r=>store.record(r),...(mode==='arena'?{concurrency:1,retries:0,allowSimulatedTools:process.env.COAGENT_ALLOW_SIMULATED_TOOLS==='1',timeoutMs:600000}:{})});
+    const concurrency=Number(process.env.COAGENT_CONCURRENCY??2);
+    const orchestrator=new Orchestrator(store,runtime,new GitWorktrees(process.env.COAGENT_WORKTREE_ROOT??'.coagent/worktrees'),concurrency);
+    const router=new ModelRouter({record:r=>store.record(r),...(mode==='arena'?{concurrency,retries:0,allowSimulatedTools:process.env.COAGENT_ALLOW_SIMULATED_TOOLS==='1',timeoutMs:600000}:{})});
     const upstreamURL=process.env.LITELLM_URL ?? 'http://127.0.0.1:4000/v1',upstreamKey=process.env.LITELLM_MASTER_KEY ?? '';
     const adapter=mode==='arena'?new ArenaAgentAdapter(process.env.ARENA_BRIDGE_URL ?? 'http://127.0.0.1:20140/v1',process.env.ARENA_BRIDGE_KEY ?? '',process.env.ARENA_SESSION_BINDINGS ?? '.coagent/arena-sessions.json',process.env.COAGENT_ARENA_DEBUG_DIR,arenaContextBudget(process.env.ARENA_CONTEXT_BUDGET_BYTES)):mode==='mock'?new MockAdapter():new OpenAIAdapter('litellm',upstreamURL,upstreamKey);
     for(const alias of ['lead','sidekick','reviewer'])router.register(alias,{adapter,model:alias});
@@ -49,8 +50,8 @@ async function main(){
   };
   if(command==='bind'){if(!arg || !extra)throw new Error('bind <OpenCode session ID> <existing Arena session UUID>');commands.bind={method:'POST',path:'/arena/bindings',body:{sessionID:arg,arenaSessionID:extra}};}
   if(command==='submit' || command==='plan' || command==='plan-prepare'){if(!arg)throw new Error('JSON file required');commands[command]={method:'POST',path:command==='plan'?'/plan':command==='plan-prepare'?'/plan/prepare':'/tasks',body:JSON.parse(await readFile(arg,'utf8'))};}
-  if(commands[command]){const c=commands[command];const response=await fetch(`http://127.0.0.1:${port}${c.path}`,{method:c.method,headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:c.body===undefined?undefined:JSON.stringify(c.body)});console.log(JSON.stringify(await response.json(),null,2));if(!response.ok)process.exitCode=1;return;}
-  if(command==='events'){const response=await fetch(`http://127.0.0.1:${port}/events?after=${Number(arg ?? 0)}`,{headers:{authorization:`Bearer ${key}`}});if(!response.ok)throw new Error(`HTTP ${response.status}`);if(response.body)for await(const chunk of response.body)process.stdout.write(chunk);return;}
+  if(commands[command]){const c=commands[command];const response=await fetch(`http://127.0.0.1:${port}${c.path}`,{method:c.method,redirect:'error',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:c.body===undefined?undefined:JSON.stringify(c.body)});console.log(JSON.stringify(await response.json(),null,2));if(!response.ok)process.exitCode=1;return;}
+  if(command==='events'){const response=await fetch(`http://127.0.0.1:${port}/events?after=${Number(arg ?? 0)}`,{redirect:'error',headers:{authorization:`Bearer ${key}`}});if(!response.ok)throw new Error(`HTTP ${response.status}`);if(response.body)for await(const chunk of response.body)process.stdout.write(chunk);return;}
   console.log('CoAgent: acp | acp-register | serve | runtime | submit <tasks.json> | plan-prepare/plan <goal.json> | list | sessions | bind <session ID> <Arena UUID> | show <id> | prepare/approve/pause/resume/cancel <id> | events [cursor] | metrics');
 }
 main().catch(e=>{console.error(e.message);process.exitCode=1;});

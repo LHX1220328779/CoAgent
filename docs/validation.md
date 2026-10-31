@@ -1,5 +1,16 @@
 # 验证记录
 
+## 2026-10-31 核心协议、依赖开发与隐私
+
+- 真实账号、真实 Arena HTTP / V2 SSE、用户授权 MCP：任务 `core-math-1793410831523` 在独立 Git worktree 修复 `math_ops.py`，3 项 Python 单测通过；显式归还两条会话后，依赖任务 `core-report-1793411163715` 自动复用同两条 Arena 会话并创建新 Native 上下文，在该实际目录修复 `report.py`，6 项测试通过。
+- 两个任务最终均 succeeded，均有独立 Reviewer 的原生父子关系及 Supervisor `acceptance_passed` 事件。实际变更仅两个源文件；测试、忽略文件及原项目 Git 基线逐字节未变，没有代替模型手工修复。证据私有保留在 `.coagent/core-acceptance/`。
+- 第二阶段首次 Reviewer 返回上一轮 request_id，严格校验拒绝；该失败独立记录。将当前响应契约补充到请求末尾后，显式恢复同任务，只继续保留的审查检查点；Worker 的工具 callID 集合未增，最终审查与外部验收通过。没有自动重放、切换账号或把旧输出当作成功。
+- 16 个真实模型轮次（含被拒绝的旧标识输出及显式恢复）共 42 次上游 HTTP，11 轮无额外授权请求，DOM 操作 0，浏览器未启动。性能记录实际发送 610058 字节；相同请求每轮完整发送历史为 814222 字节，减少 **25.07%**。这是字节比较，不是实测 token 节省或模型加速比例；首条 SSE record 也不是首个模型 token。
+- 本轮在线开发使用同一账号的两个独立 Arena 会话。跨账号并发与每账号单轮限制由受控协议测试验证，尚未取得真实双账号并发收益数据，不扩大结论。
+- `npm run check` 通过；`node --test tests/arena.test.ts tests/arena-pool.test.ts tests/arena-protocol.test.ts tests/mcp-text-bridge.test.ts tests/runtime.test.ts tests/desktop.test.ts tests/acp.test.ts tests/integration/arena-opencode.test.ts`：**35 项通过**。集成启动实际 OpenCode 1.19.5、执行真实本地工具、审批、审查及验收，模型上游为 Fixture，与上面的在线 Arena 验收分开。
+- 隐私定向验证：本机 HTTP 服务实际返回 307 重定向，MCP 工具请求及控制台登录密码均未转发到第二个目标；协议请求断言只访问 Arena HTTPS 且拒绝重定向；诊断内容不含模型正文与消息；受管理 Runtime 的自动下载和项目配置开关生效。未执行全网流量审计，也不保证上游或指定隧道不记录数据。
+- 本机显式 HTTP 代理下 MCP 请求曾出现 TLS/socket 失败；同一端点通过用户已有 TUN 正常 initialize / tools/list / 文件操作。仅为该 MCP 主机保留 NO_PROXY 例外，未变更 Arena 路由或绕过服务端目录权限。
+
 ## 2026-10-31 ACP 客户端适配
 
 - 最终 `npm run check` 通过；`node --test tests/acp.test.ts tests/integration/arena-opencode.test.ts` 的 **9 项测试全部通过**（8 项 ACP 契约 + 1 项真实 OpenCode 进程集成）。未重复无关的全量测试。
