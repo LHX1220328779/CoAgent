@@ -29,3 +29,22 @@ test('task reservations are exclusive, atomic, persistent, preserve titles and r
   await orch.close();store.close();closed=true;const reopened=new Store(path);try{assert.equal(reopened.db.prepare('SELECT COUNT(*) AS n FROM arena_leases').get()!.n,2);assert.equal(reopened.db.prepare('SELECT COUNT(*) AS n FROM task_agent_sessions').get()!.n,4);}finally{reopened.close();}
  }finally{if(!closed){await orch.close();store.close();}bridge.closeAllConnections();await new Promise<void>(done=>bridge.close(()=>done()));await fixture.cleanup();}
 });
+test('pending workers use less loaded accounts without rebinding existing tasks or counting completed reservations as work',async()=>{
+ const fixture=await repoFixture(),store=new Store(join(fixture.root,'state.db')),runtime=new FakeRuntime(),orch=new Orchestrator(store,runtime,new GitWorktrees(join(fixture.root,'trees')));
+ const adapter=new ArenaAgentAdapter('http://127.0.0.1:20140/v1','fixture',join(fixture.root,'bindings.json')),pool=new ArenaPool(store,adapter);
+ try{
+  store.add(['history','a','b','c','d'].map(id=>taskFromInput({id,prompt:'A task',repo:fixture.repo,workspaceMode:'direct'})));store.update('history',{status:'succeeded'});
+  for(let n=1;n<=12;n++){
+   const id=`00000000-0000-0000-0000-${String(n).padStart(12,'0')}`;
+   store.db.prepare('INSERT INTO arena_catalog VALUES(?,?,?,?,?)').run(id,n<=6?'owner1@example.invalid':'owner2@example.invalid','原始标题 '+n,1,1);
+   if(n<=6)store.db.prepare('INSERT INTO arena_successful_sessions VALUES(?,?,?)').run(id,'history',1);
+  }
+  await orch.prepare('a');await orch.prepare('b');await orch.prepare('c');await orch.prepare('d');
+  await pool.assign('a');const original=pool.assignments('a');assert.ok(original.every((s:any)=>s.account_email==='owner1@example.invalid'));
+  await pool.assign('b');assert.equal((pool.assignments('b').find((s:any)=>s.role==='sidekick') as any).account_email,'owner2@example.invalid','pending task a already reserves a worker on owner1');
+  await pool.assign('a');assert.deepEqual(pool.assignments('a'),original,'assignment remains stable despite changed loads');
+  store.update('a',{status:'succeeded'});await pool.assign('c');assert.equal((pool.assignments('c').find((s:any)=>s.role==='sidekick') as any).account_email,'owner1@example.invalid','completed task keeps its reservation but no longer adds pending work');
+  store.update('b',{status:'reviewing'});await pool.assign('d');assert.equal((pool.assignments('d').find((s:any)=>s.role==='sidekick') as any).account_email,'owner2@example.invalid','reviewing task b now loads its reviewer account, not its idle worker account');
+  assert.equal(pool.assignments('a').length,2);assert.equal(new Set((pool.snapshot().leases as any[]).map(s=>s.arena_id)).size,8);
+ }finally{await orch.close();store.close();await fixture.cleanup();}
+});

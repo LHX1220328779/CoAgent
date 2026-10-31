@@ -1,5 +1,15 @@
 # 验证记录
 
+## 2026-10-31 双账号真实并发与负载分配
+
+- 按实际控制台协议流程：使用用户配置的 MCP 创建两个独立目录项目、确认固定测试先失败；分别创建任务并自动准备/分配，批准两任务同时执行，按 Native callID 对唯一目标文件补丁及准确测试命令单次审批。无需复制会话网址，两个 Worker 实际属于不同账号。
+- 任务 `3099ff8a-7a34-43ee-a317-ef47cf0b2020` 修复姓名去空白/小写转换；`4634a98a-5385-4427-a719-d7b083a323d3` 修复分数上下界限制。两个账号均通过 MCP 完成读取、补丁、复读、命令，各 3 项测试通过；独立 Reviewer 原生父子关系和 Supervisor 外部验收事件均存在，测试文件逐字节未变，原始标题与目录匹配。
+- Worker 协议轮次实测最大重叠 **12326ms**，最终两个任务均 succeeded；这证明该样例的真实跨账号重叠，不是串行基线对比、总体加速倍数或高并发保证。桥接模型通道共 15 轮、40 次 HTTP（含一次显式审查恢复，不含发现、MCP 和只读排障），DOM 操作 0，未启动浏览器。
+- 首次 clamp 审查失败：存储于 Arena 的原始答复只有一个文本 part，缺少最终结束标记；与流解析截断区分后保留严格拒绝。将完整响应契约移到提示末尾并改进评审 JSON 示例后，显式恢复同一 Reviewer，未重跑 Worker，审查与外部验收通过。初次失败保留于 `initial-result.json`，不改写为一次即成功。
+- 新分配测试验证：繁忙账号仍有成功空闲会话时，新 Worker 选择较少负载账号；重复分配不改绑；完成任务保留独占但不算当前负载；进入审查阶段按 Reviewer 所属账号计算负载。
+- `node --test tests/arena-pool.test.ts tests/arena.test.ts tests/runtime.test.ts tests/integration/arena-opencode.test.ts`：12 项通过，模型上游为 Fixture，实际启动固定 OpenCode 执行本地工具；最终补充审查阶段负载后又运行分配/进程集成 3 项。类型检查通过。新增缺失结束标记拒绝及已知错误静态提示用例，不回显上游正文。
+- 私有证据：`.coagent/parallel-acceptance/{setup,progress,result,initial-result,failure-diagnosis}.json`，以及受控重启前的协议时间记录。测试资源在成功后由本轮显式归还四条，代码、Native 历史与失败证据保留；本轮未修改模型、代理、并发或 MCP 配置。
+
 ## 2026-10-31 核心协议、依赖开发与隐私
 
 - 真实账号、真实 Arena HTTP / V2 SSE、用户授权 MCP：任务 `core-math-1793410831523` 在独立 Git worktree 修复 `math_ops.py`，3 项 Python 单测通过；显式归还两条会话后，依赖任务 `core-report-1793411163715` 自动复用同两条 Arena 会话并创建新 Native 上下文，在该实际目录修复 `report.py`，6 项测试通过。

@@ -66,6 +66,11 @@ test('cancel confirmation failure is explicit and retains the original interrupt
     });assert.equal(aborts,1);
   }finally{await f.close();}
 });
+test('known gateway failures expose actionable static messages without reflecting upstream text or allowing replay',async()=>{
+  const f=await fixture((_req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({info:{error:{name:'APIError',data:{statusCode:422,responseBody:JSON.stringify({error:{type:'arena_tool_protocol_error',message:'private upstream response and cookie'}})}}},parts:[]}));});
+  try{await assert.rejects(f.runtime.prompt('ses_review','reviewer','/tmp',{providerID:'coagent',modelID:'reviewer'},'review',AbortSignal.timeout(1000)),error=>{assert.ok(error instanceof RuntimeExecutionError);assert.equal(error.code,'arena_tool_protocol_error');assert.equal(error.status,422);assert.equal(error.retryable,false);assert.equal(error.stopConfirmed,true);assert.match(error.message,/格式不完整|轮次标识/);assert.doesNotMatch(error.message,/private|cookie/);return true;});}
+  finally{await f.close();}
+});
 
 test('a submitted prompt waits for the task signal without the fetch headers deadline',async t=>{
   const f=await fixture((_req,res)=>{setTimeout(()=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({info:{},parts:[{type:'text',text:'finished after tool rounds'}]}));},60);});

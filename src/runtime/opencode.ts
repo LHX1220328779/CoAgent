@@ -4,6 +4,14 @@ import {request as httpsRequest} from 'node:https';
 import {Readable} from 'node:stream';
 import { parseSSE } from '../gateway/protocol.ts';
 import type { AgentRuntime, AgentRole, ModelRef, RuntimeResult } from '../types.ts';
+const arenaFailures=new Map([
+  ['arena_tool_protocol_error','Arena 答复格式不完整或轮次标识不匹配，已停止且未执行该响应；请检查本轮后显式恢复。'],
+  ['arena_tool_protocol_unsupported','Arena 会话未返回本轮工具协议；请检查该会话是否支持当前任务。'],
+  ['arena_authorization_required','Arena 账号登录失效或访问被拒绝；请正常登录后显式恢复。'],
+  ['arena_quota_exhausted','Arena 当前账号额度不足；任务已停止，不自动切换账号。'],
+  ['arena_context_length','Arena 请求超过本地上下文预算；请缩小任务或调整配置。'],
+  ['arena_turn_interrupted','Arena 本轮未正常完成；请核对原会话后显式恢复，避免重复执行。'],
+]);
 export class OpenCodeRuntime implements AgentRuntime {
   url: string; password: string;
   constructor(url: string, password: string) { this.url = url.replace(/\/$/,''); this.password = password; }
@@ -36,9 +44,12 @@ export class OpenCodeRuntime implements AgentRuntime {
       },signal);
       const result = await response.json() as { info: {error?:unknown;tokens?: {input?:number;output?:number;cache?:{read?:number}};cost?:number}; parts: {type:string;text?:string;[key:string]:unknown}[] };
       if (result.info?.error) {
-        const failure=result.info.error as {name?:string;data?:{statusCode?:number}};
+        const failure=result.info.error as {name?:string;data?:{statusCode?:number;responseBody?:string}};
         const status=failure.data?.statusCode;
-        const error=new RuntimeExecutionError('OpenCode reported model execution error',typeof status==='number' && Number.isInteger(status) && status>=400 && status<=599 ? status : failure.name==='ProviderAuthError' ? 401 : 502);
+        let kind:string|undefined,label:string|undefined;
+        if(model.providerID==='coagent'&&typeof failure.data?.responseBody==='string'&&failure.data.responseBody.length<=8192)try{const issue=JSON.parse(failure.data.responseBody)?.error;kind=issue?.code??issue?.type;label=arenaFailures.get(kind!);}catch{}
+        const error=new RuntimeExecutionError(label??'OpenCode reported model execution error',typeof status==='number' && Number.isInteger(status) && status>=400 && status<=599 ? status : failure.name==='ProviderAuthError' ? 401 : 502);
+        if(label)error.code=kind!;
         error.cause=result.info.error;throw error;
       }
       if (!Array.isArray(result.parts)) throw new AppError('Invalid OpenCode response',502,'runtime_error');

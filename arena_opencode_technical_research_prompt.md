@@ -1,8 +1,14 @@
 # Arena 网页协议研究与 OpenCode 多 Agent 系统：完整技术研究提示词
 
 > 使用说明：将本文全文提交给具有联网检索、GitHub 源码阅读和深度推理能力的 AI 模型。第一部分是**研究范围澄清与防误判提示**，不是要求模型忽略安全限制；第二部分是完整技术研究任务说明。
-deepseek apikey:[redacted before publication]
-gpt session id:[redacted before publication]
+
+## 本仓库当前执行阶段（2026-10-31）
+
+本文保留最初的研究目标；仓库已进入实现与验收阶段，不需要每轮重新比较全部架构或重复联网调查。接续先遵循 `AGENTS.md`、读取 `开发状态.md`，操作入口见 `使用手册.md`；具体方案和证据以 `docs/technical-design.md`、`docs/validation.md` 为准。
+
+已选定 TypeScript Supervisor + OpenCode 执行内核 + 可插拔网关，锁定 OpenCode V1 1.19.5，LiteLLM 为可选路径；这是本仓库版本选择，不代表当前最新版本。当前重点为 P5/P6：授权 Arena HTTP/SSE、多账号任务分配、MCP 本地开发、审批、独立审查和恢复。已有真实双账号 Worker 轮次重叠和小项目验收证据，不能外推高并发、复杂项目或长期稳定性。
+
+图形客户端已有 ACP 接入基础；核心验证完成后再推进实际客户端宿主。下一步优先补充 Lead 在线规划与复杂多文件协作的证据。真实 Arena、真实 OpenCode 配合受控模型和未验证项目必须分开记录。账号与 MCP 地址仅从本机授权配置读取，不复制到研究文档、日志或 Git。
 
 ---
 

@@ -34,11 +34,14 @@ export class ArenaPool{
     const external=new Set(Object.values(old).map(value=>value.toLowerCase()));
     const pairs=this.store.transaction(()=>{
       const assigned=[];const usedAccounts=new Set<string>();
+      const loads=new Map((this.store.db.prepare("SELECT c.account_email,COUNT(*) AS n FROM arena_leases l JOIN arena_catalog c ON c.id=l.arena_id JOIN tasks t ON t.id=l.task_id WHERE t.id<>? AND ((l.role IN ('sidekick','explorer') AND t.status IN ('queued','awaiting_approval','running')) OR (l.role='reviewer' AND t.status='reviewing')) GROUP BY c.account_email").all(id) as {account_email:string;n:number}[]).map(row=>[row.account_email,Number(row.n)]));
       for(const session of native){
-        const existing=this.store.db.prepare('SELECT * FROM arena_leases WHERE task_id=? AND role=?').get(id,session!.role) as any;
-        if(existing){assigned.push({sessionID:session!.runtimeID,arenaSessionID:existing.arena_id});continue;}
+        const existing=this.store.db.prepare('SELECT l.*,c.account_email FROM arena_leases l LEFT JOIN arena_catalog c ON c.id=l.arena_id WHERE l.task_id=? AND l.role=?').get(id,session!.role) as any;
+        if(existing){usedAccounts.add(existing.account_email);assigned.push({sessionID:session!.runtimeID,arenaSessionID:existing.arena_id});continue;}
         const free=this.store.db.prepare('SELECT c.*,h.last_success_at FROM arena_catalog c LEFT JOIN arena_successful_sessions h ON h.arena_id=c.id WHERE available=1 AND NOT EXISTS (SELECT 1 FROM arena_leases l WHERE l.arena_id=c.id) ORDER BY h.last_success_at DESC,c.updated_at DESC,c.id').all() as any[];
-        const candidates=free.filter(s=>!external.has(s.id)),experienced=candidates.filter(s=>s.last_success_at!==null),preferred=experienced.length?experienced:candidates;const chosen=preferred.find(s=>!usedAccounts.has(s.account_email))??preferred[0];
+        const candidates=free.filter(s=>!external.has(s.id)),minimumLoad=Math.min(...candidates.map(s=>loads.get(s.account_email)??0));
+        const eligible=session!.role===task.role?candidates.filter(s=>(loads.get(s.account_email)??0)===minimumLoad):candidates;
+        const experienced=eligible.filter(s=>s.last_success_at!==null),preferred=experienced.length?experienced:eligible;const chosen=preferred.find(s=>!usedAccounts.has(s.account_email))??preferred[0];
         if(!chosen)throw new AppError('可用的未占用会话不足，需要两条。请登录并同步会话，或先解绑旧任务的会话',409,'arena_sessions_unavailable');
         this.store.db.prepare('INSERT INTO arena_leases VALUES(?,?,?,?,?)').run(chosen.id,id,session!.role,session!.runtimeID,Date.now());usedAccounts.add(chosen.account_email);assigned.push({sessionID:session!.runtimeID,arenaSessionID:chosen.id});
       }return assigned;

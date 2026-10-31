@@ -41,7 +41,7 @@ test('Arena mode with real OpenCode: generated config, session binding, local to
     // returns text, without interpreting tools or converting XML to tool_calls.
     const prompt=request.messages.at(-1).content as string;
     assert.equal(request.messages.length,1);assert.match(prompt,/"tools":/);
-    const context=JSON.parse(prompt.split('OpenCode request JSON:\n')[1]);assert.equal(context.context.session_id,session);const canonical=context.context.kind==='append'?[...(contexts.get(session)??[]),...context.messages]:context.messages;contexts.set(session,canonical);const effectivePrompt=JSON.stringify(canonical);
+    const context=JSON.parse(prompt.split('OpenCode request JSON:\n')[1].split('\nEnd of OpenCode request JSON.')[0]);assert.equal(context.context.session_id,session);const canonical=context.context.kind==='append'?[...(contexts.get(session)??[]),...context.messages]:context.messages;contexts.set(session,canonical);const effectivePrompt=JSON.stringify(canonical);
     const turn=(turns.get(session) ?? 0)+1;turns.set(session,turn);
     res.writeHead(200,{'content-type':'text/event-stream'});
     const chunk=(delta:unknown,finish:string|null=null)=>res.write(`data: ${JSON.stringify({id:'chatcmpl-arena-fixture',object:'chat.completion.chunk',created:1,model:request.model,choices:[{index:0,delta,finish_reason:finish}]})}\n\n`);
